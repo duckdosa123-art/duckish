@@ -309,7 +309,7 @@ class Engine:
                         "multipv": multipv_results,
                         **overall,
                     }
-            except (RuntimeError, EOFError, BrokenPipeError) as e:
+            except (RuntimeError, EOFError, BrokenPipeError, TimeoutError) as e:
                 self._last_error = str(e)
                 if attempt == 0:
                     self.respawn()

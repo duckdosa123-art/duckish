@@ -273,8 +273,8 @@ pub fn search_position(
 
     // start search threads:
     // MultiPV == 1: use Lazy SMP (helpers run full iterative_deepening).
-    // MultiPV > 1 with helpers: use parallel MultiPV (helpers run multi_pv_helper_loop).
-    // MultiPV > 1 without helpers: main thread runs all PVs sequentially.
+    // MultiPV > 1: run single-threaded (proven deadlock-free: Threads=1 + MultiPV=3).
+    //              Main thread handles all PVs sequentially; helpers are not spawned.
     let multi_pv = thread_headers[0].info.control.multi_pv();
     let (t1, rest) = thread_headers.split_first_mut().unwrap();
     let (w1, rest_workers) = pool.split_first().unwrap();
@@ -293,7 +293,7 @@ pub fn search_position(
             w1,
         ));
 
-        if multi_pv == 1 {
+        if multi_pv == 1 && has_helpers {
             // Lazy SMP: helpers run full search with empty time limits.
             for (t, w) in rest.iter_mut().zip(rest_workers) {
                 handles.push(s.spawn_into(
@@ -304,18 +304,9 @@ pub fn search_position(
                     w,
                 ));
             }
-        } else if has_helpers {
-            // Parallel MultiPV: helpers run the task loop.
-            for (t, w) in rest.iter_mut().zip(rest_workers) {
-                handles.push(s.spawn_into(
-                    || {
-                        multi_pv_helper_loop(t);
-                    },
-                    w,
-                ));
-            }
         }
-        // If multi_pv > 1 but no helpers, main thread handles all PVs sequentially.
+        // If multi_pv > 1: NO helpers spawned. Main thread runs all PVs sequentially.
+        // This avoids deadlocks in the parallel MultiPV task/result queues.
 
         for handle in handles {
             handle.join();
