@@ -17,6 +17,12 @@ from urllib.parse import urlparse, parse_qs
 from typing import Optional, List, Dict, Any, Tuple
 import chess
 
+# Add bridge directory to path for local imports
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BRIDGE_DIR)
+
+from experience import ExperienceStore, BLUNDER_THRESHOLD_CP, LEARNING_BONUS_CP, DEFAULT_DB_PATH
+
 # ---- Configuration ----------------------------------------------------------
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -387,11 +393,11 @@ class Engine:
             return None
         return result
 
-    def health(self) -> Dict[str, Any]:
+    def health(self, experience: Optional[ExperienceStore] = None) -> Dict[str, Any]:
         """Return health status."""
         alive = self.proc is not None and self.proc.poll() is None
         pid = self.proc.pid if self.proc else None
-        return {
+        h = {
             "status": "ok" if alive else "dead",
             "engine": "duckish",
             "pid": pid,
@@ -405,6 +411,18 @@ class Engine:
             "multipv": self.default_multipv,
             "last_error": self._last_error,
         }
+        if experience:
+            exp_stats = experience.get_stats()
+            h.update({
+                "experience_positions": exp_stats.get("positions_count", 0),
+                "experience_moves": exp_stats.get("moves_count", 0),
+                "experience_games_won": exp_stats.get("games_won", 0),
+                "experience_games_lost": exp_stats.get("games_lost", 0),
+                "experience_games_drawn": exp_stats.get("games_drawn", 0),
+                "experience_mistakes": exp_stats.get("mistakes_corrected", 0),
+                "experience_recent_lessons": exp_stats.get("recent_lessons", []),
+            })
+        return h
 
     def shutdown(self) -> None:
         """Terminate the engine process."""
@@ -427,6 +445,8 @@ class Engine:
 class BridgeHandler(BaseHTTPRequestHandler):
     engine: Engine  # set by server
     default_movetime: int
+    experience: ExperienceStore  # set by server
+    _current_game_moves: List[str] = []  # track moves for post-mortem
 
     def do_OPTIONS(self) -> None:
         self._send_cors()
@@ -439,10 +459,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/health":
-                data = self.engine.health()
+                data = self.engine.health(self.experience)
                 self._send_json(200, data)
             elif path == "/":
-                self._send_html(200, self._dashboard_html(self.engine.health()))
+                self._send_html(200, self._dashboard_html(self.engine.health(self.experience)))
             else:
                 self._send_json(404, {"ok": False, "error": "not found"})
         except Exception as e:
@@ -459,6 +479,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 body{{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:2rem}}
 .card{{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1.5rem;max-width:600px;margin:auto}}
 h1{{margin:0 0 1rem;font-size:1.5rem}}
+h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #334155;padding-top:1rem}}
 .row{{display:flex;justify-content:space-between;padding:.4rem 0;border-bottom:1px solid #334155}}
 .row:last-child{{border-bottom:none}}
 .label{{color:#94a3b8}}
@@ -476,43 +497,26 @@ h1{{margin:0 0 1rem;font-size:1.5rem}}
 <div class="row"><span class="label">Hash (MB)</span><span class="value">{h.get('hash_mb',256)}</span></div>
 <div class="row"><span class="label">MultiPV</span><span class="value">{h.get('multipv',3)}</span></div>
 <div class="row"><span class="label">Last Error</span><span class="value">{h.get('last_error') or 'none'}</span></div>
+<h2>Experience Book</h2>
+<div class="row"><span class="label">Positions</span><span class="value">{h.get('experience_positions',0)}</span></div>
+<div class="row"><span class="label">Move Records</span><span class="value">{h.get('experience_moves',0)}</span></div>
+<div class="row"><span class="label">Games Won</span><span class="value">{h.get('experience_games_won',0)}</span></div>
+<div class="row"><span class="label">Games Lost</span><span class="value">{h.get('experience_games_lost',0)}</span></div>
+<div class="row"><span class="label">Games Drawn</span><span class="value">{h.get('experience_games_drawn',0)}</span></div>
+<div class="row"><span class="label">Mistakes Corrected</span><span class="value">{h.get('experience_mistakes',0)}</span></div>
+<div class="row"><span class="label">Recent Lessons</span><span class="value">{str(h.get('experience_recent_lessons') or '[]')}</span></div>
 </div></body></html>"""
 
     def do_POST(self) -> None:
         start = time.monotonic()
         path = urlparse(self.path).path
         try:
-            if path != "/analyze":
+            if path == "/analyze":
+                self._handle_analyze()
+            elif path == "/game-over":
+                self._handle_game_over()
+            else:
                 self._send_json(404, {"ok": False, "error": "not found"})
-                return
-
-            content_length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(content_length).decode("utf-8")
-            try:
-                req = json.loads(body) if body else {}
-            except json.JSONDecodeError:
-                self._send_json(400, {"ok": False, "error": "invalid json"})
-                return
-
-            moves = req.get("moves", [])
-            if not isinstance(moves, list):
-                self._send_json(400, {"ok": False, "error": "moves must be a list"})
-                return
-
-            movetime = req.get("movetime", self.default_movetime)
-            movetime = max(50, min(5000, int(movetime)))
-
-            multipv = req.get("multipv", self.engine.default_multipv)
-            multipv = max(1, min(10, int(multipv)))
-
-            depth = req.get("depth")
-            if depth is not None:
-                depth = int(depth)
-                if depth < 1:
-                    depth = None
-
-            result = self.engine.analyze(moves, movetime, multipv, depth)
-            self._send_json(200, result)
 
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
@@ -524,6 +528,186 @@ h1{{margin:0 0 1rem;font-size:1.5rem}}
             self._send_json(500, {"ok": False, "error": f"internal error: {e}"})
         finally:
             self._log_request(start)
+
+    def _handle_analyze(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "invalid json"})
+            return
+
+        moves = req.get("moves", [])
+        if not isinstance(moves, list):
+            self._send_json(400, {"ok": False, "error": "moves must be a list"})
+            return
+
+        # Track moves for post-mortem (only if new moves appended)
+        if len(moves) > len(self._current_game_moves):
+            self._current_game_moves = moves[:]
+
+        movetime = req.get("movetime", self.default_movetime)
+        movetime = max(50, min(5000, int(movetime)))
+
+        multipv = req.get("multipv", self.engine.default_multipv)
+        multipv = max(1, min(10, int(multipv)))
+
+        depth = req.get("depth")
+        if depth is not None:
+            depth = int(depth)
+            if depth < 1:
+                depth = None
+
+        result = self.engine.analyze(moves, movetime, multipv, depth)
+
+        # Apply learned adjustments
+        if result.get("ok") and result.get("multipv"):
+            board = self._moves_to_board(moves)
+            fen = board.fen()
+            # Record position with deep score (from best line)
+            best_score = result["multipv"][0].get("score_cp")
+            self.experience.record_position(fen, best_score, None)
+            # Apply adjustments and re-rank
+            adjusted = self.experience.apply_adjustments(fen, result["multipv"])
+            result["multipv"] = adjusted
+            result["learned"] = any(c.get("learned", False) for c in adjusted)
+
+        # Inference fallback: if game is over, run post-mortem once
+        board = self._moves_to_board(moves)
+        if board.is_game_over():
+            self._run_post_mortem_if_needed(moves, board)
+
+        self._send_json(200, result)
+
+    def _handle_game_over(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "invalid json"})
+            return
+
+        result = req.get("result")  # "win" | "loss" | "draw" | null
+        winner = req.get("winner")  # "white" | "black" | "draw" | null
+        moves = req.get("moves", [])
+        if not isinstance(moves, list):
+            self._send_json(400, {"ok": False, "error": "moves must be a list"})
+            return
+
+        # Run post-mortem with explicit result
+        board = self._moves_to_board(moves)
+        self._run_post_mortem(moves, board, result, winner)
+
+        # Clear tracked game
+        self._current_game_moves = []
+
+        self._send_json(200, {"ok": True})
+
+    def _moves_to_board(self, moves: List[str]) -> chess.Board:
+        """Convert SAN moves list to a chess.Board."""
+        board = chess.Board()
+        for san in moves:
+            try:
+                move = board.parse_san(san)
+                board.push(move)
+            except ValueError:
+                break
+        return board
+
+    def _run_post_mortem_if_needed(self, moves: List[str], board: chess.Board) -> None:
+        """Run post-mortem if game just ended (inference fallback)."""
+        # Only run once per game end - check if we haven't recorded this game yet
+        result = None
+        winner = None
+        if board.is_checkmate():
+            result = "loss"  # side to move lost
+            winner = "black" if board.turn == chess.WHITE else "white"
+        elif board.is_stalemate() or board.is_insufficient_material() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
+            result = "draw"
+            winner = "draw"
+        else:
+            return
+        self._run_post_mortem(moves, board, result, winner)
+        self._current_game_moves = []
+
+    def _run_post_mortem(self, moves: List[str], board: chess.Board, result: Optional[str], winner: Optional[str]) -> None:
+        """
+        Post-mortem analysis:
+        - For each move with eval drop > BLUNDER_THRESHOLD_CP, record penalty
+        - If loss, penalize final losing move
+        - Record corrective bonus for engine best move at blunder positions
+        """
+        if len(moves) < 2:
+            return
+
+        # Replay game and collect evaluations at each position
+        # We need to re-analyze each position to get scores
+        # For MVP, we'll use a simplified approach: analyze each position with the engine
+        # but to avoid too many engine calls, we'll only check positions where we have moves
+        
+        eval_history = []  # list of (fen_before, move_uci, score_cp_after)
+        temp_board = chess.Board()
+        
+        for i, san in enumerate(moves):
+            try:
+                fen_before = temp_board.fen()
+                move = temp_board.parse_san(san)
+                move_uci = move.uci()
+                temp_board.push(move)
+                fen_after = temp_board.fen()
+                
+                # Analyze position after move to get score from opponent's perspective
+                # We'll do a quick shallow analysis
+                try:
+                    analysis = self.engine.analyze(moves[:i+1], 100, 1, depth=10)
+                    if analysis.get("ok") and analysis.get("multipv"):
+                        score_cp = analysis["multipv"][0].get("score_cp")
+                        if score_cp is not None:
+                            # Score is from side to move's perspective
+                            eval_history.append((fen_before, move_uci, score_cp))
+                except Exception:
+                    pass  # Skip if analysis fails
+                    
+            except ValueError:
+                break
+
+        # Find blunders: eval drops > threshold between consecutive positions
+        for i in range(1, len(eval_history)):
+            fen_before, move_uci, score_after = eval_history[i]
+            _, _, score_before = eval_history[i-1]
+            # Score is from side to move perspective, so a drop for the player who just moved
+            # means score_before (their perspective before move) vs -score_after (their perspective after opponent's reply)
+            # Actually, score_before is from player A's perspective before move
+            # score_after is from player B's perspective after move
+            # The eval change for player A is -score_after - score_before
+            drop = -score_after - score_before
+            if drop > BLUNDER_THRESHOLD_CP:
+                # Record penalty for the move that caused the blunder
+                self.experience.record_move(fen_before, move_uci, penalty_cp=drop, bonus_cp=0.0)
+                # Record corrective bonus for engine's best move at that position
+                try:
+                    analysis = self.engine.analyze(moves[:i], 200, 1, depth=12)
+                    if analysis.get("ok") and analysis.get("multipv"):
+                        best_uci = analysis["multipv"][0].get("uci")
+                        if best_uci and best_uci != move_uci:
+                            self.experience.record_move(fen_before, best_uci, penalty_cp=0.0, bonus_cp=LEARNING_BONUS_CP)
+                except Exception:
+                    pass
+
+        # If loss, also penalize the final move
+        if result == "loss" and eval_history:
+            fen_before, move_uci, _ = eval_history[-1]
+            self.experience.record_move(fen_before, move_uci, penalty_cp=BLUNDER_THRESHOLD_CP, bonus_cp=0.0)
+
+        # Record final position with result
+        final_fen = board.fen()
+        # Get deep score for final position if available
+        deep_score = None
+        if eval_history:
+            deep_score = eval_history[-1][2]
+        self.experience.record_position(final_fen, deep_score, result)
 
     def _send_cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -563,21 +747,24 @@ h1{{margin:0 0 1rem;font-size:1.5rem}}
 
 def run_server(port: int, default_movetime: int) -> None:
     engine = Engine(ENGINE_PATH, DEFAULT_MULTIPV)
+    experience = ExperienceStore(DEFAULT_DB_PATH)
     handler_class = type(
         "Handler",
         (BridgeHandler,),
-        {"engine": engine, "default_movetime": default_movetime},
+        {"engine": engine, "default_movetime": default_movetime, "experience": experience},
     )
     server = ThreadingHTTPServer(("0.0.0.0", port), handler_class)
     print(f"Bridge server listening on http://0.0.0.0:{port}", flush=True)
     print(f"Engine: {ENGINE_PATH}", flush=True)
     print(f"Default MultiPV: {DEFAULT_MULTIPV}, Default movetime: {default_movetime}ms", flush=True)
+    print(f"Experience DB: {DEFAULT_DB_PATH}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...", flush=True)
     finally:
         engine.shutdown()
+        experience.close()
         server.server_close()
 
 

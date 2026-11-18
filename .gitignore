@@ -33,3 +33,4 @@ Cargo.lock
 *.log
 *.bin
 __pycache__/
+*.db

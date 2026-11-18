@@ -25,7 +25,8 @@ const state = {
   lastResult: null,
   panel: null,
   svg: null,
-  debounceTimer: null
+  debounceTimer: null,
+  gameOverSent: false
 };
 
 // -----------------------------------------------------------------------------
@@ -57,6 +58,93 @@ function getOrientation() {
 }
 
 // -----------------------------------------------------------------------------
+// Game Over Detection & Reporting
+// -----------------------------------------------------------------------------
+function detectGameResult() {
+  // Chess.com shows game result in various elements
+  // Check for game over modal or result text
+  const resultSelectors = [
+    ".game-over-modal",
+    ".game-over",
+    "[data-testid='game-over']",
+    ".archive-game-result",
+    ".game-result"
+  ];
+  
+  for (const sel of resultSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.textContent.toLowerCase();
+      if (text.includes("checkmate") || text.includes("resign") || text.includes("timeout") || text.includes("abandon")) {
+        // Determine winner from text
+        if (text.includes("white") && (text.includes("won") || text.includes("victory") || text.includes("checkmate"))) {
+          return { result: "win", winner: "white" };
+        }
+        if (text.includes("black") && (text.includes("won") || text.includes("victory") || text.includes("checkmate"))) {
+          return { result: "win", winner: "black" };
+        }
+        if (text.includes("draw") || text.includes("stalemate") || text.includes("insufficient") || text.includes("repetition") || text.includes("50 move")) {
+          return { result: "draw", winner: "draw" };
+        }
+        // Generic win/loss detection
+        if (text.includes("won") || text.includes("victory") || text.includes("checkmate")) {
+          // Can't determine color, return generic
+          return { result: "win", winner: null };
+        }
+        if (text.includes("lost") || text.includes("defeat") || text.includes("resign")) {
+          return { result: "loss", winner: null };
+        }
+      }
+      if (text.includes("draw") || text.includes("stalemate") || text.includes("insufficient") || text.includes("repetition") || text.includes("50 move")) {
+        return { result: "draw", winner: "draw" };
+      }
+    }
+  }
+  
+  // Also check for game over by looking at clock/turn indicators
+  // If no legal moves and not in check = stalemate, if in check = checkmate
+  // But this is hard to detect from DOM alone. We'll rely on explicit result elements.
+  
+  return null;
+}
+
+function sendGameOver(result, winner, moves) {
+  if (state.gameOverSent) return;
+  
+  const payload = {
+    result: result,
+    winner: winner,
+    moves: moves
+  };
+  
+  GM_xmlhttpRequest({
+    method: "POST",
+    url: BRIDGE_URL + "/game-over",
+    data: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    timeout: 5000,
+    onload: (res) => {
+      try {
+        const parsed = JSON.parse(res.responseText);
+        if (parsed.ok) {
+          console.log("[Duckish] Game-over reported successfully");
+        }
+      } catch (e) {
+        console.error("[Duckish] Game-over response parse error:", e);
+      }
+    },
+    onerror: () => {
+      console.warn("[Duckish] Game-over request failed (bridge offline?)");
+    },
+    ontimeout: () => {
+      console.warn("[Duckish] Game-over request timeout");
+    }
+  });
+  
+  state.gameOverSent = true;
+}
+
+// -----------------------------------------------------------------------------
 // MutationObserver - debounced board change detection
 // -----------------------------------------------------------------------------
 function scheduleAnalyze() {
@@ -69,6 +157,18 @@ function onBoardChanged() {
   const orientation = getOrientation();
   const movesKey = JSON.stringify(moves);
   const currentMovesKey = JSON.stringify(state.moves);
+  
+  // Check for game over
+  const gameResult = detectGameResult();
+  if (gameResult && !state.gameOverSent && moves.length > 0) {
+    sendGameOver(gameResult.result, gameResult.winner, moves);
+  }
+  
+  // Reset gameOverSent if moves changed (new game started)
+  if (movesKey !== currentMovesKey) {
+    state.gameOverSent = false;
+  }
+  
   if (movesKey !== currentMovesKey || orientation !== state.orientation) {
     state.moves = moves;
     state.orientation = orientation;
