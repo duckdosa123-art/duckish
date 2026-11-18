@@ -71,6 +71,26 @@ Caveats worth keeping:
 
 Upstream declares no `MultiPV` option at all; `setoption name MultiPV` is a Duckish addition (`spin`, default 1, min 1, max 10). That is the whole advisor delta, and it is not free: `MultiPV > 1` runs N root searches per depth single-threaded, so the bridge defaults to a 400 ms budget and the userscript exposes a Fast (1) / Analysis (3) toggle.
 
+### Hardware Scaling (Better CPU = Stronger Duckish)
+
+Duckish turns hardware into strength in three measurable places:
+
+- **Lazy SMP across physical cores (Fast Mode, `MultiPV 1`).** Helper threads search the same root position and share one 256 MB transposition table. On this 2-thread host that measured 1.59x NPS, which is what produced the +80 Elo in the out-of-the-box match. That is slightly below the 1.7-1.9x NPS published for 2 threads by other engines, because the box is small (4 physical cores) and the time control is 100 ms; the direction still holds, and more physical cores buy more search depth inside the same 400 ms budget. Expect sub-linear returns past roughly 8-16 cores, as with every SMP engine.
+- **Native SIMD NNUE (`-C target-cpu=native`).** Building locally lets the compiler target your CPU's widest vector ISA - AVX2, or AVX-512 on recent Ryzen/Intel parts - so Hyperion's NNUE accumulator updates and matrix evaluations do more per clock cycle. A generic release binary leaves that throughput on the table. This is a build-time win, not a source change.
+- **L3 cache headroom.** At ~700k NPS, node rate is partly a cache story: more L3 keeps the hot slice of the transposition table and the NNUE accumulators on-die instead of stalling on DRAM. The table is 256 MB, so only its hot fraction is ever resident - a bigger L3 makes that fraction bigger.
+
+**Analysis Mode (`MultiPV > 1`) deliberately runs single-threaded.** Rank 2 must be a clean re-search with rank 1's root move excluded; threads inject timing-dependent node counts and can reorder candidates between runs. Throughput is traded for reproducibility on purpose.
+
+#### Is any of this novel?
+
+No, and it is worth being blunt about it:
+
+- Root-exclusion MultiPV (search the best line, exclude its root move, re-search for the next rank, then re-sort so `multipv 1` equals `bestmove`) is exactly what Stockfish (`pvIdx` loop in `search.cpp`), Ethereal and Berserk implement.
+- `-C target-cpu=native` (or `-march=native`) is standard engine build practice; upstream Viridithas documents the same Rust command, and Stockfish's `Makefile` defaults to `ARCH = native`.
+- Lazy SMP with one shared hash table has been the mainstream multicore scheme since Stockfish 7.
+
+The one thing we could not find in a published engine is the deliberate rule **force `Threads = 1` whenever `MultiPV > 1`**. Stockfish, Ethereal and Berserk all run the PV loop inside every worker thread. That is an advisor-motivated policy, not a search-theory contribution, and it is why the bridge defaults to 400 ms with a Fast/Analysis toggle.
+
 ## Building Viridithas
 
 If you just want one of the official releases of Viridithas, check out the **Releases** tab on the right.
