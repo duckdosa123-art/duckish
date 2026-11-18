@@ -63,7 +63,9 @@ use cli::Subcommands::{
 };
 
 /// The name of the engine.
-pub static NAME: &str = "Viridithas";
+pub static NAME: &str = "Duckish";
+/// The full engine identity, as shown in the startup banner and the UCI handshake.
+pub static BRANDING: &str = "Duckish 1.0 (Hyperion NNUE)";
 /// The version of the engine.
 pub static VERSION: &str = env!("CARGO_PKG_VERSION");
 

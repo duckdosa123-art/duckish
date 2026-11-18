@@ -22,7 +22,7 @@ use std::{
 };
 
 use crate::{
-    GIT_HASH, NAME, VERSION,
+    BRANDING, GIT_HASH, VERSION,
     bench::BENCH_POSITIONS,
     chess::{
         board::{
@@ -39,7 +39,7 @@ use crate::{
     nnue::{self, network::NNUEParams},
     perft,
     search::{LMTable, adj_shuffle, parameters::Config, search_position},
-    searchinfo::{Control, SearchInfo},
+    searchinfo::{Control, MAX_MULTI_PV, SearchInfo},
     tablebases, term,
     threadlocal::{ThreadData, make_thread_data},
     threadpool,
@@ -51,12 +51,15 @@ use crate::{
 #[cfg(feature = "nnz-counts")]
 use crate::nnue::network::layers::{NNZ_COUNT, NNZ_DENOM};
 
-const UCI_DEFAULT_HASH_MEGABYTES: usize = 16;
+const UCI_DEFAULT_HASH_MEGABYTES: usize = 256;
 const UCI_MAX_HASH_MEGABYTES: usize = 1_048_576;
 const UCI_MAX_THREADS: usize = 512;
 const BENCH_DEPTH: usize = 14;
 const BENCH_THREADS: usize = 1;
 
+// Retained for callers that want the upstream package version (the UCI identity
+// reports `BRANDING` instead).
+#[allow(dead_code, reason = "kept for callers that want the package version")]
 fn version() -> impl Display {
     let ext = if cfg!(feature = "final-release") {
         String::new()
@@ -70,7 +73,7 @@ static SET_TERM: Once = Once::new();
 static STDIN_READER_THREAD_KEEP_RUNNING: AtomicBool = AtomicBool::new(true);
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub fn main_loop() -> Result<(), UciError> {
-    println!("{NAME} {} by Cosmo", version());
+    println!("{BRANDING}");
 
     let mut worker_threads = threadpool::make_worker_threads(1);
 
@@ -727,6 +730,21 @@ fn parse_setoption(
             }
             out.threads = value;
         }
+        "MultiPV" => {
+            let value: usize =
+                opt_value
+                    .parse()
+                    .map_err(|e| SetOptionParseError::InvalidIntValue {
+                        name: "MultiPV".to_string(),
+                        source: e,
+                    })?;
+            // `set_multi_pv` clamps to `1..=MAX_MULTI_PV`.
+            if control.searching.load(Ordering::SeqCst) {
+                println!("info string cannot change MultiPV while a search is running");
+            } else {
+                control.set_multi_pv(value);
+            }
+        }
         "PrettyPrint" => {
             let value: bool =
                 opt_value
@@ -866,12 +884,13 @@ fn stdin_reader_worker(sender: mpsc::Sender<String>, control: &Control) -> Resul
 }
 
 fn print_uci_response(info: &SearchInfo, full: bool) {
-    println!("id name {NAME} {}", version());
+    println!("id name {BRANDING}");
     println!("id author Cosmo");
     println!(
         "option name Hash type spin default {UCI_DEFAULT_HASH_MEGABYTES} min 1 max {UCI_MAX_HASH_MEGABYTES}"
     );
     println!("option name Threads type spin default 1 min 1 max 512");
+    println!("option name MultiPV type spin default 1 min 1 max {MAX_MULTI_PV}");
     println!("option name PrettyPrint type check default false");
     println!("option name SyzygyPath type string default <empty>");
     println!("option name SyzygyProbeLimit type spin default 7 min 0 max 7");

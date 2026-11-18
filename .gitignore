@@ -30,3 +30,4 @@ profdir/*
 stacks.folded
 Cargo.lock
 *.book
+*.log

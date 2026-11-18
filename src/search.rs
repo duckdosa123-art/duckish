@@ -30,7 +30,7 @@ use crate::{
     lookups::HM_CLOCK_KEYS,
     movepicker::{MovePicker, Stage},
     search::pv::PVariation,
-    searchinfo::SearchInfo,
+    searchinfo::{MAX_MULTI_PV, SearchInfo},
     tablebases::{self, probe::WDL},
     threadlocal::ThreadData,
     threadpool::{self, ScopeExt},
@@ -243,8 +243,13 @@ pub fn search_position(
     );
 
     // start search threads:
+    // MultiPV is deliberately single-threaded: the main thread enumerates the
+    // root moves in a deterministic order, and helper threads would both disturb
+    // that ordering and let `select_best` override PV 1.
+    let multi_pv = thread_headers[0].info.control.multi_pv();
     let (t1, rest) = thread_headers.split_first_mut().unwrap();
     let (w1, rest_workers) = pool.split_first().unwrap();
+    t1.info.control.searching.store(true, Ordering::SeqCst);
     thread::scope(|s| {
         let mut handles = Vec::with_capacity(pool.len());
         handles.push(s.spawn_into(
@@ -254,19 +259,22 @@ pub fn search_position(
             },
             w1,
         ));
-        for (t, w) in rest.iter_mut().zip(rest_workers) {
-            handles.push(s.spawn_into(
-                || {
-                    assert!(matches!(*t.info.clock.limits, []));
-                    iterative_deepening::<HelperThread>(t);
-                },
-                w,
-            ));
+        if multi_pv == 1 {
+            for (t, w) in rest.iter_mut().zip(rest_workers) {
+                handles.push(s.spawn_into(
+                    || {
+                        assert!(matches!(*t.info.clock.limits, []));
+                        iterative_deepening::<HelperThread>(t);
+                    },
+                    w,
+                ));
+            }
         }
         for handle in handles {
             handle.join();
         }
     });
+    t1.info.control.searching.store(false, Ordering::SeqCst);
 
     let best_thread = select_best(thread_headers);
     let pv = best_thread.pv();
@@ -276,14 +284,17 @@ pub fn search_position(
         .copied()
         .unwrap_or_else(|| default_move(&thread_headers[0]));
 
-    // always give a final info log before ending search
-    readout_info(
-        best_thread,
-        &thread_headers[0].info,
-        Bound::Exact,
-        thread_headers[0].info.nodes.get_global(),
-        true,
-    );
+    // always give a final info log before ending search, unless MultiPV is
+    // active: then the tagged `multipv k` lines are the whole story.
+    if multi_pv == 1 {
+        readout_info(
+            best_thread,
+            &thread_headers[0].info,
+            Bound::Exact,
+            thread_headers[0].info.nodes.get_global(),
+            true,
+        );
+    }
 
     if thread_headers[0].info.print_to_stdout {
         let maybe_ponder = pv.moves.get(1).map_or_else(String::new, |ponder_move| {
@@ -342,6 +353,26 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
         "main thread must have thread_id 0"
     );
     let max_depth = dyn_max_depth(t);
+    // MultiPV is a main-thread-only feature: helpers always search a single
+    // aspiration-windowed PV, and never touch the root exclusion list.
+    let multi_pv = if ThTy::MAIN_THREAD {
+        t.info.control.multi_pv()
+    } else {
+        1
+    };
+    // how many root moves we're allowed to search, honouring `searchmoves`.
+    let root_move_count = {
+        let legal_moves = t.board.legal_moves();
+        let search_moves = t.info.control.search_moves.read().unwrap();
+        if search_moves.is_empty() {
+            legal_moves.len()
+        } else {
+            legal_moves
+                .iter()
+                .filter(|m| search_moves.contains(m))
+                .count()
+        }
+    };
     let mut average_value = VALUE_NONE;
     'deepening: for iteration in 1..=max_depth {
         t.iteration = iteration;
@@ -368,49 +399,122 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
             beta = (average_value + delta).min(INFINITY);
         }
 
-        // aspiration loop:
-        loop {
-            let root_draft = (t.root_depth - reduction).max(min_depth);
-            t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
-            if t.info.check_up() {
-                break 'deepening; // we've been told to stop searching.
+        // the number of PVs to search at this depth, clamped to the number of
+        // root moves we're allowed to search.
+        let pv_count = multi_pv.min(root_move_count.max(1));
+        // the stem move of every PV resolved so far at this depth; these get
+        // excluded from the root for all subsequent PV searches.
+        let mut resolved: ArrayVec<Move, MAX_MULTI_PV> = ArrayVec::new();
+        // the PVs completed at this depth, ranked by score once the loop ends.
+        let mut pv_results: ArrayVec<(PVariation, i32), MAX_MULTI_PV> = ArrayVec::new();
+        // the draft PV 1's accepted score was actually produced at
+        let mut pv1_draft = min_depth;
+
+        let mut stopped = false;
+        for pv_idx in 0..pv_count {
+            if pv_idx > 0 {
+                // exclude the moves we've already resolved, and reset the root
+                // state so that a fail-high from the previous PV can't leak in.
+                t.info.control.set_excluded(resolved.to_vec());
+                // search every PV at PV 1's effective draft; that removes the
+                // one-ply-deeper inversions, though a few centipawns of
+                // non-monotonicity can still occur at equal draft because the
+                // excluded root set changes TT hits and pruning.
+                t.root_depth = pv1_draft;
+                t.score_scratch = VALUE_NONE;
+                t.pv_scratch[0].moves.clear();
+                alpha = -INFINITY;
+                beta = INFINITY;
+                delta = t.info.conf.delta_initial;
+                reduction = 0;
             }
 
-            if t.score_scratch <= alpha {
-                if ThTy::MAIN_THREAD {
-                    readout_info(t, &t.info, Bound::Upper, t.info.nodes.get_global(), false);
-                    t.info
-                        .clock
-                        .report_aspiration_fail(t.root_depth, Bound::Upper, &t.info.conf);
+            // aspiration loop:
+            loop {
+                let root_draft = (t.root_depth - reduction).max(min_depth);
+                if pv_idx == 0 {
+                    pv1_draft = root_draft;
                 }
-                beta = i32::midpoint(alpha, beta);
-                alpha = (t.score_scratch - delta).max(-INFINITY);
-                reduction = 0;
-                // search failed low, so we might have to
-                // revert a fail-high pv update
-                t.revert_best_line();
-            } else if t.score_scratch >= beta {
-                t.update_best_line();
-                if ThTy::MAIN_THREAD {
-                    readout_info(t, &t.info, Bound::Lower, t.info.nodes.get_global(), false);
-                    t.info
-                        .clock
-                        .report_aspiration_fail(t.root_depth, Bound::Lower, &t.info.conf);
+                t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
+                if t.info.check_up() {
+                    // we've been told to stop searching: publish whatever PVs
+                    // completed at this depth once the loop has unwound.
+                    stopped = true;
+                    break;
                 }
-                beta = (t.score_scratch + delta).min(INFINITY);
-                reduction += 1;
-                // decrement depth:
-                if !is_decisive(t.score_scratch) {
-                    t.root_depth = (t.root_depth - 1).max(min_depth);
+
+                if t.score_scratch <= alpha {
+                    if ThTy::MAIN_THREAD && multi_pv == 1 {
+                        readout_info(t, &t.info, Bound::Upper, t.info.nodes.get_global(), false);
+                        t.info.clock.report_aspiration_fail(
+                            t.root_depth,
+                            Bound::Upper,
+                            &t.info.conf,
+                        );
+                    }
+                    beta = i32::midpoint(alpha, beta);
+                    alpha = (t.score_scratch - delta).max(-INFINITY);
+                    reduction = 0;
+                    // search failed low, so we might have to
+                    // revert a fail-high pv update
+                    t.revert_best_line();
+                } else if t.score_scratch >= beta {
+                    // only PV 1 is allowed to update the main line.
+                    if pv_idx == 0 {
+                        t.update_best_line();
+                    }
+                    if ThTy::MAIN_THREAD && multi_pv == 1 {
+                        readout_info(t, &t.info, Bound::Lower, t.info.nodes.get_global(), false);
+                        t.info.clock.report_aspiration_fail(
+                            t.root_depth,
+                            Bound::Lower,
+                            &t.info.conf,
+                        );
+                    }
+                    beta = (t.score_scratch + delta).min(INFINITY);
+                    reduction += 1;
+                    // decrement depth:
+                    if !is_decisive(t.score_scratch) {
+                        t.root_depth = (t.root_depth - 1).max(min_depth);
+                    }
+                } else {
+                    // only PV 1 is allowed to update the main line.
+                    if pv_idx == 0 {
+                        t.update_best_line();
+                    }
+                    break;
                 }
-            } else {
-                t.update_best_line();
+
+                delta += delta
+                    * (t.info.conf.delta_base_mul + t.info.conf.delta_reduction_mul * reduction)
+                    / 128;
+            }
+
+            if stopped {
                 break;
             }
 
-            delta += delta
-                * (t.info.conf.delta_base_mul + t.info.conf.delta_reduction_mul * reduction)
-                / 128;
+            let Some(&best) = t.pv_scratch[0].moves.first() else {
+                // every root move is excluded, so there's nothing left to search.
+                break;
+            };
+
+            pv_results.push((t.pv_scratch[0].clone(), t.score_scratch));
+            resolved.push(best);
+        }
+
+        // rank, report and adopt the completed PVs, then drop the exclusions
+        // (they are only meaningful while the PV loop is running).
+        finish_pv_batch(
+            t,
+            pv_results,
+            &mut average_value,
+            multi_pv,
+            ThTy::MAIN_THREAD,
+        );
+        t.info.control.clear_excluded();
+        if stopped {
+            break 'deepening;
         }
 
         // if we've made it here, it means we got an exact score.
@@ -420,15 +524,7 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
             .copied()
             .unwrap_or_else(|| default_move(t));
 
-        average_value = if average_value == VALUE_NONE {
-            t.score_scratch
-        } else {
-            (2 * t.score_scratch + average_value) / 3
-        };
-
         if ThTy::MAIN_THREAD {
-            readout_info(t, &t.info, Bound::Exact, t.info.nodes.get_global(), false);
-
             if let Some(margin) = t.info.clock.forcedness_margin(t.root_depth) {
                 let saved_seldepth = t.info.seldepth;
                 let forced = is_forced(
@@ -498,15 +594,21 @@ fn default_move(t: &ThreadData) -> Move {
         .probe_move(t.board.state.keys.zobrist)
         .and_then(|e| e.0);
 
-    let mut mp = MovePicker::new(tt_move, t.killer_move_table[t.board.height()], 0);
+    let search_moves = t.info.control.search_moves.read().unwrap();
+    let excluded = t.info.control.root_excluded.read().unwrap();
 
-    let sm = t.info.control.search_moves.read().unwrap();
+    let pick = |include_excluded: bool| -> Option<Move> {
+        let mut mp = MovePicker::new(tt_move, t.killer_move_table[t.board.height()], 0);
+        std::iter::from_fn(|| mp.next(t))
+            .filter(|m| search_moves.is_empty() || search_moves.contains(m))
+            .filter(|m| include_excluded || !excluded.contains(m))
+            .find(|&m| t.board.is_legal(m))
+    };
 
-    let filter = |m: &Move| sm.is_empty() || sm.contains(m);
-
-    std::iter::from_fn(|| mp.next(t))
-        .filter(filter)
-        .find(|&m| t.board.is_legal(m))
+    // in MultiPV mode, a move may be excluded because it's already the stem of
+    // another PV, but we only fall back to one of those if there's no choice.
+    pick(false)
+        .or_else(|| pick(true))
         .expect("Board::default_move called on a position with no legal moves")
 }
 
@@ -1374,8 +1476,13 @@ pub fn alpha_beta<NT: NodeType>(
         }
 
         if NT::ROOT {
-            let search_moves = t.info.control.search_moves.read().unwrap();
-            if !search_moves.is_empty() && !search_moves.contains(&m) {
+            {
+                let search_moves = t.info.control.search_moves.read().unwrap();
+                if !search_moves.is_empty() && !search_moves.contains(&m) {
+                    continue;
+                }
+            }
+            if t.info.control.is_excluded(m) {
                 continue;
             }
         }
@@ -2041,13 +2148,69 @@ pub fn select_best<'a>(thread_headers: &'a [Box<ThreadData<'a>>]) -> &'a ThreadD
     best
 }
 
+/// Rank the PVs completed at one depth, report them, and adopt the best as the
+/// result of the iteration (so `multipv 1` is what `bestmove` reports).
+fn finish_pv_batch(
+    t: &mut ThreadData,
+    mut pv_results: ArrayVec<(PVariation, i32), MAX_MULTI_PV>,
+    average_value: &mut i32,
+    multi_pv: usize,
+    report: bool,
+) {
+    if pv_results.is_empty() {
+        return;
+    }
+
+    // rank the completed PVs by score: with equal draft and a full window the
+    // scores are comparable, and this keeps `multipv 1` == `bestmove` even when
+    // the excluded-root search disagrees.
+    pv_results.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+
+    if report {
+        for (idx, (pv, score)) in pv_results.iter().enumerate() {
+            let rank = if multi_pv > 1 { idx + 1 } else { 0 };
+            readout_info_pv(
+                t,
+                &t.info,
+                pv,
+                *score,
+                Bound::Exact,
+                t.info.nodes.get_global(),
+                false,
+                rank,
+            );
+        }
+    }
+
+    let (best_pv, best_score) = pv_results[0].clone();
+    t.pv_scratch[0] = best_pv;
+    t.score_scratch = best_score;
+    *average_value = if *average_value == VALUE_NONE {
+        best_score
+    } else {
+        (2 * best_score + *average_value) / 3
+    };
+    // publish the ranked best, so it drives the best line and `bestmove`.
+    t.update_best_line();
+}
+
 /// Print the info about an iteration of the search.
-fn readout_info(
+fn readout_info(t: &ThreadData, info: &SearchInfo, bound: Bound, nodes: u64, force_print: bool) {
+    let (pv, score) = (t.pv(), t.score());
+    readout_info_pv(t, info, pv, score, bound, nodes, force_print, 0);
+}
+
+/// Print the info about a single PV. `multipv` is the 1-based index of the PV
+/// being reported, or 0 when the engine isn't reporting multiple PVs.
+fn readout_info_pv(
     t: &ThreadData,
     info: &SearchInfo,
+    pv: &PVariation,
+    score: i32,
     mut bound: Bound,
     nodes: u64,
     force_print: bool,
+    multipv: usize,
 ) {
     #![allow(
         clippy::cast_precision_loss,
@@ -2071,7 +2234,6 @@ fn readout_info(
         cache: tt,
         ..
     } = t;
-    let pv = t.pv();
     let normal_uci_output = !info.control.pretty_print.load(Ordering::SeqCst);
     let nps = (nodes as f64 / info.clock.elapsed().as_secs_f64()) as u64;
     if board.turn() == Colour::Black {
@@ -2082,19 +2244,24 @@ fn readout_info(
         Bound::Lower => " lowerbound",
         _ => "",
     };
+    let multipv_string = if multipv > 0 {
+        format!(" multipv {multipv}")
+    } else {
+        String::new()
+    };
     if normal_uci_output {
         println!(
-            "info depth {iteration} seldepth {} nodes {nodes} time {} nps {nps} hashfull {hashfull} tbhits {tbhits} score {sstr}{bound_string} wdl {wdl} {pv}",
+            "info depth {iteration} seldepth {}{multipv_string} nodes {nodes} time {} nps {nps} hashfull {hashfull} tbhits {tbhits} score {sstr}{bound_string} wdl {wdl} {pv}",
             info.seldepth as usize,
             info.clock.elapsed().as_millis(),
-            sstr = uci::fmt::format_score(t.score()),
+            sstr = uci::fmt::format_score(score),
             hashfull = tt.hashfull(),
             tbhits = t.info.tbhits.get_global(),
-            wdl = uci::fmt::format_wdl(t.score(), board.ply()),
+            wdl = uci::fmt::format_wdl(score, board.ply()),
             pv = pv.display(board.rules()),
         );
     } else {
-        let value = uci::fmt::pretty_format_score(t.score(), board.turn());
+        let value = uci::fmt::pretty_format_score(score, board.turn());
         let mut pv_string = board.pv_san(pv).unwrap();
         let pv_string_len = pv_string.len();
         // truncate the pv string if it's too long
@@ -2134,7 +2301,7 @@ fn readout_info(
             t = uci::fmt::format_time(info.clock.elapsed().as_millis()),
             nps_fmt = uci::fmt::pretty_format_counter(nps),
             knodes = uci::fmt::pretty_format_counter(nodes),
-            wdl = uci::fmt::pretty_format_wdl(t.score(), board.ply()),
+            wdl = uci::fmt::pretty_format_wdl(score, board.ply()),
         );
     }
 }

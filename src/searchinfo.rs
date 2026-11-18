@@ -73,7 +73,16 @@ pub struct Control {
     pub syzygy_probe_depth: AtomicI32,
     pub contempt: AtomicI32,
     pub search_moves: RwLock<Vec<Move>>,
+    /// The number of principal variations to search and report.
+    pub multi_pv: RwLock<usize>,
+    /// Root moves to skip, used to enumerate the secondary PVs in `MultiPV` mode.
+    pub root_excluded: RwLock<Vec<Move>>,
+    /// Whether a search is currently in progress.
+    pub searching: AtomicBool,
 }
+
+/// The maximum number of principal variations that can be requested.
+pub const MAX_MULTI_PV: usize = 10;
 
 impl Default for Control {
     fn default() -> Self {
@@ -88,6 +97,9 @@ impl Default for Control {
             syzygy_probe_depth: AtomicI32::new(1),
             contempt: AtomicI32::new(0),
             search_moves: RwLock::new(Vec::new()),
+            multi_pv: RwLock::new(1),
+            root_excluded: RwLock::new(Vec::new()),
+            searching: AtomicBool::new(false),
         }
     }
 }
@@ -96,6 +108,34 @@ impl Control {
     pub fn set_moves(&self, moves: Vec<Move>) {
         let mut guard = self.search_moves.write().unwrap();
         *guard = moves;
+    }
+
+    /// Sets the number of principal variations, clamped to `1..=MAX_MULTI_PV`.
+    pub fn set_multi_pv(&self, pv_count: usize) {
+        let mut guard = self.multi_pv.write().unwrap();
+        *guard = pv_count.clamp(1, MAX_MULTI_PV);
+    }
+
+    /// The number of principal variations to search and report.
+    pub fn multi_pv(&self) -> usize {
+        *self.multi_pv.read().unwrap()
+    }
+
+    /// Excludes the given root moves from the search.
+    pub fn set_excluded(&self, moves: Vec<Move>) {
+        let mut guard = self.root_excluded.write().unwrap();
+        *guard = moves;
+    }
+
+    /// Stops excluding any root moves from the search.
+    pub fn clear_excluded(&self) {
+        let mut guard = self.root_excluded.write().unwrap();
+        guard.clear();
+    }
+
+    /// Whether the given root move is currently excluded from the search.
+    pub fn is_excluded(&self, m: Move) -> bool {
+        self.root_excluded.read().unwrap().contains(&m)
     }
 }
 
