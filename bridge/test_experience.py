@@ -290,6 +290,77 @@ def test_apply_adjustments_mate_candidate():
             pass
 
 
+def test_san_whitespace_normalization():
+    """Test that SAN moves with whitespace parse correctly after normalization."""
+    import re
+    import chess
+    
+    # Test basic whitespace stripping - moves legal from startpos
+    tests = [
+        (["N f3", "N f6"], "Knight moves with space"),
+        (["e 4", "e 5"], "Pawn moves with space"),
+    ]
+    
+    for moves, description in tests:
+        normalized = [re.sub(r'\s+', '', m) for m in moves]
+        board = chess.Board()
+        try:
+            for san in normalized:
+                move = board.parse_san(san)
+                board.push(move)
+            print(f"PASS: {description} -> {normalized}")
+        except Exception as e:
+            print(f"FAIL: {description} -> {type(e).__name__}: {e}")
+            return
+
+    # Test castling kingside with spaces (in a position where it's legal)
+    normalized = [re.sub(r'\s+', '', "O - O")]
+    board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+    try:
+        move = board.parse_san(normalized[0])
+        board.push(move)
+        print(f"PASS: Castling kingside with spaces -> {normalized}")
+    except Exception as e:
+        print(f"FAIL: Castling kingside with spaces -> {type(e).__name__}: {e}")
+        return
+
+    # Test castling queenside with spaces
+    normalized = [re.sub(r'\s+', '', "O - O - O")]
+    board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+    try:
+        move = board.parse_san(normalized[0])
+        board.push(move)
+        print(f"PASS: Castling queenside with spaces -> {normalized}")
+    except Exception as e:
+        print(f"FAIL: Castling queenside with spaces -> {type(e).__name__}: {e}")
+        return
+
+    # Test promotion with check - set up a legal position
+    # White pawn on e7, black king on e1 -> e7e8=Q gives check
+    normalized = [re.sub(r'\s+', '', "e 8 = Q")]
+    board = chess.Board("8/4P3/8/8/8/8/8/4k3 w - - 0 1")
+    try:
+        move = board.parse_san(normalized[0])
+        board.push(move)
+        print(f"PASS: Promotion with spaces -> {normalized}")
+    except Exception as e:
+        print(f"FAIL: Promotion with spaces -> {type(e).__name__}: {e}")
+        return
+
+    # Test "axb1= Q+" -> "axb1=Q+" normalization (just verify string normalization)
+    promo_tests = [
+        ("axb1= Q+", "axb1=Q+"),
+        ("e8 = N #", "e8=N#"),
+        ("h1 = R +", "h1=R+"),
+    ]
+    
+    for raw, expected in promo_tests:
+        normalized = re.sub(r'\s+', '', raw)
+        if normalized != expected:
+            print(f"FAIL: normalization mismatch: {raw} -> {normalized} != {expected}")
+            return
+        print(f"PASS: normalization {raw} -> {normalized}")
+
 if __name__ == "__main__":
     test_constants()
     test_mate_score_to_cp()
@@ -298,3 +369,4 @@ if __name__ == "__main__":
     test_apply_adjustments_re_ranks()
     test_apply_adjustments_mate_candidate()
     test_get_stats()
+    test_san_whitespace_normalization()

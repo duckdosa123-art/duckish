@@ -12,6 +12,7 @@ import queue
 import threading
 import subprocess
 import logging
+import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from typing import Optional, List, Dict, Any, Tuple
@@ -467,6 +468,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_html(200, self._dashboard_html(self.engine.health(self.experience)))
             else:
                 self._send_json(404, {"ok": False, "error": "not found"})
+        except (ConnectionAbortedError, BrokenPipeError):
+            # Client disconnected - ignore silently
+            return
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
         finally:
@@ -535,6 +539,9 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
             else:
                 self._send_json(404, {"ok": False, "error": "not found"})
 
+        except (ConnectionAbortedError, BrokenPipeError):
+            # Client disconnected - ignore silently
+            return
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
         except TimeoutError:
@@ -559,6 +566,9 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
         if not isinstance(moves, list):
             self._send_json(400, {"ok": False, "error": "moves must be a list"})
             return
+
+        # Normalize: strip all whitespace from each SAN move (e.g. "N f3" -> "Nf3")
+        moves = [re.sub(r'\s+', '', m) for m in moves]
 
         # Track moves for post-mortem (only if new moves appended)
         if len(moves) > len(self._current_game_moves):

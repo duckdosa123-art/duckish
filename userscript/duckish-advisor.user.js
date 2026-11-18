@@ -46,7 +46,7 @@ function extractMoves() {
       const textNode = document.createTextNode(fig);
       el.replaceWith(textNode);
     });
-    const san = clone.textContent.trim();
+    const san = clone.textContent.trim().replace(/\s+/g, '');
     if (san) sanList.push(san);
   });
   return sanList;
