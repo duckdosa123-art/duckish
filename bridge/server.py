@@ -44,6 +44,11 @@ class Engine:
         self._reader_thread: Optional[threading.Thread] = None
         self._lines = queue.Queue()
         self._alive = False
+        self._book_loaded = False
+        self._book_hits = 0
+        self._hash_mb = 256
+        self._threads = 1
+        self._last_error: Optional[str] = None
         self._start_engine()
 
     def _start_engine(self) -> None:
@@ -77,10 +82,13 @@ class Engine:
         self._read_until(lambda line: line.strip() == "uciok", HANDSHAKE_TIMEOUT)
         self._send("isready")
         self._read_until(lambda line: line.strip() == "readyok", HANDSHAKE_TIMEOUT)
-        self._send(f"setoption name Hash value 256")
+        self._send(f"setoption name Hash value {self._hash_mb}")
         self._send(f"setoption name MultiPV value {self.default_multipv}")
         if BOOK_PATH and os.path.isfile(BOOK_PATH):
             self._send(f"setoption name BookPath value {BOOK_PATH}")
+            self._book_loaded = True
+        else:
+            self._book_loaded = False
         # No need to wait for setoption ack
 
     def _drain_stderr(self) -> None:
@@ -132,6 +140,22 @@ class Engine:
             self._alive = False
             self._start_engine()
 
+    def respawn(self) -> None:
+        """Force respawn the engine and re-apply settings."""
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                try:
+                    self._send("quit")
+                except Exception:
+                    pass
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            self._alive = False
+            self._start_engine()
+
     def analyze(
         self,
         moves: List[str],
@@ -143,138 +167,147 @@ class Engine:
         Run analysis on a position. Returns parsed result dict.
         Raises ValueError on bad moves, TimeoutError on timeout, RuntimeError on engine death.
         """
-        with self.lock:
-            self._ensure_alive()
+        for attempt in range(2):  # try once, then respawn and retry once
+            try:
+                with self.lock:
+                    self._ensure_alive()
 
-            # Build position command
-            board = chess.Board()
-            uci_moves = []
-            for san in moves:
-                try:
-                    move = board.parse_san(san)
-                except ValueError as e:
-                    raise ValueError(f"illegal move: {san}") from e
-                uci_moves.append(move.uci())
-                board.push(move)
-
-            pos_cmd = "position startpos"
-            if uci_moves:
-                pos_cmd += " moves " + " ".join(uci_moves)
-            self._send(pos_cmd)
-
-            # Build go command
-            if depth is not None:
-                go_cmd = f"go depth {depth}"
-            else:
-                go_cmd = f"go movetime {movetime}"
-            if multipv != self.default_multipv:
-                # Set MultiPV for this search only (if engine supports dynamic)
-                self._send(f"setoption name MultiPV value {multipv}")
-            self._send(go_cmd)
-
-            # Read until bestmove
-            deadline = time.monotonic() + ANALYSIS_TIMEOUT
-            info_lines_by_depth: Dict[int, Dict[int, str]] = {}
-            bestmove_line = ""
-            last_depth_seen = 0
-
-            while True:
-                line = self._read_line(deadline)
-                if line is None:
-                    raise RuntimeError("engine process died during analysis")
-                if line.startswith("info "):
-                    # Parse depth and multipv rank; keep only the LAST line per (depth, rank),
-                    # because aspiration re-searches reprint rank 1 several times at one depth.
-                    parts = line.split()
-                    try:
-                        d = int(parts[parts.index("depth") + 1])
+                    # Build position command
+                    board = chess.Board()
+                    uci_moves = []
+                    for san in moves:
                         try:
-                            rank = int(parts[parts.index("multipv") + 1])
-                        except (ValueError, IndexError):
-                            rank = 1
-                        last_depth_seen = max(last_depth_seen, d)
-                        info_lines_by_depth.setdefault(d, {})[rank] = line
-                    except (ValueError, IndexError):
-                        pass
-                elif line.startswith("bestmove"):
-                    bestmove_line = line
-                    break
+                            move = board.parse_san(san)
+                        except ValueError as e:
+                            raise ValueError(f"illegal move: {san}") from e
+                        uci_moves.append(move.uci())
+                        board.push(move)
 
-            # Determine last complete depth
-            requested_mpv = multipv
-            complete_depth = 0
-            for d in sorted(info_lines_by_depth.keys(), reverse=True):
-                ranks = info_lines_by_depth[d]
-                if all(k in ranks for k in range(1, requested_mpv + 1)):
-                    complete_depth = d
-                    break
-            if complete_depth == 0:
-                complete_depth = last_depth_seen
+                    pos_cmd = "position startpos"
+                    if uci_moves:
+                        pos_cmd += " moves " + " ".join(uci_moves)
+                    self._send(pos_cmd)
 
-            # Parse bestmove
-            bestmove_uci = ""
-            if bestmove_line:
-                parts = bestmove_line.split()
-                if len(parts) >= 2:
-                    bestmove_uci = parts[1]
+                    # Build go command
+                    if depth is not None:
+                        go_cmd = f"go depth {depth}"
+                    else:
+                        go_cmd = f"go movetime {movetime}"
+                    if multipv != self.default_multipv:
+                        # Set MultiPV for this search only (if engine supports dynamic)
+                        self._send(f"setoption name MultiPV value {multipv}")
+                    self._send(go_cmd)
 
-            # Parse multipv lines at complete_depth
-            multipv_results = []
-            if complete_depth in info_lines_by_depth:
-                for rank in sorted(info_lines_by_depth[complete_depth].keys()):
-                    if rank > requested_mpv:
-                        continue
-                    info_line = info_lines_by_depth[complete_depth][rank]
-                    parsed = self._parse_info_line(info_line, board, rank)
-                    if parsed:
-                        multipv_results.append(parsed)
+                    # Read until bestmove
+                    deadline = time.monotonic() + ANALYSIS_TIMEOUT
+                    info_lines_by_depth: Dict[int, Dict[int, str]] = {}
+                    bestmove_line = ""
+                    last_depth_seen = 0
 
-            # Sort by rank
-            multipv_results.sort(key=lambda x: x["rank"])
+                    while True:
+                        line = self._read_line(deadline)
+                        if line is None:
+                            raise RuntimeError("engine process died during analysis")
+                        if line.startswith("info "):
+                            # Parse depth and multipv rank; keep only the LAST line per (depth, rank),
+                            # because aspiration re-searches reprint rank 1 several times at one depth.
+                            parts = line.split()
+                            try:
+                                d = int(parts[parts.index("depth") + 1])
+                                try:
+                                    rank = int(parts[parts.index("multipv") + 1])
+                                except (ValueError, IndexError):
+                                    rank = 1
+                                last_depth_seen = max(last_depth_seen, d)
+                                info_lines_by_depth.setdefault(d, {})[rank] = line
+                            except (ValueError, IndexError):
+                                pass
+                        elif line.startswith("bestmove"):
+                            bestmove_line = line
+                            break
 
-            # Convert bestmove to SAN (do NOT mutate the analysis board)
-            bestmove_san = ""
-            if bestmove_uci:
-                try:
-                    bestmove_san = board.san(chess.Move.from_uci(bestmove_uci))
-                except ValueError:
-                    bestmove_san = bestmove_uci
+                    # Determine last complete depth
+                    requested_mpv = multipv
+                    complete_depth = 0
+                    for d in sorted(info_lines_by_depth.keys(), reverse=True):
+                        ranks = info_lines_by_depth[d]
+                        if all(k in ranks for k in range(1, requested_mpv + 1)):
+                            complete_depth = d
+                            break
+                    if complete_depth == 0:
+                        complete_depth = last_depth_seen
 
-            # Convert PV UCI to SAN for each multipv line
-            for mpv in multipv_results:
-                pv_uci = mpv["pv_uci"]
-                pv_san = []
-                temp_board = board.copy()  # analysis position, unmodified
-                for uci in pv_uci:
-                    try:
-                        move = chess.Move.from_uci(uci)
-                        pv_san.append(temp_board.san(move))
-                        temp_board.push(move)
-                    except ValueError:
-                        pv_san.append(uci)
-                mpv["uci"] = pv_uci[0] if pv_uci else ""
-                mpv["san"] = pv_san[0] if pv_san else ""
-                mpv["pv_san"] = pv_san
-                mpv["pv_text"] = " ".join(pv_san)
+                    # Parse bestmove
+                    bestmove_uci = ""
+                    if bestmove_line:
+                        parts = bestmove_line.split()
+                        if len(parts) >= 2:
+                            bestmove_uci = parts[1]
 
-            # Overall stats from the first (rank 1) line at complete_depth
-            overall = {}
-            if multipv_results:
-                first = multipv_results[0]
-                overall = {
-                    "nodes": first.get("nodes", 0),
-                    "nps": first.get("nps", 0),
-                    "time_ms": first.get("time_ms", 0),
-                    "hashfull": first.get("hashfull", 0),
-                }
+                    # Parse multipv lines at complete_depth
+                    multipv_results = []
+                    if complete_depth in info_lines_by_depth:
+                        for rank in sorted(info_lines_by_depth[complete_depth].keys()):
+                            if rank > requested_mpv:
+                                continue
+                            info_line = info_lines_by_depth[complete_depth][rank]
+                            parsed = self._parse_info_line(info_line, board, rank)
+                            if parsed:
+                                multipv_results.append(parsed)
 
-            return {
-                "ok": True,
-                "depth": complete_depth,
-                "bestmove": {"uci": bestmove_uci, "san": bestmove_san},
-                "multipv": multipv_results,
-                **overall,
-            }
+                    # Sort by rank
+                    multipv_results.sort(key=lambda x: x["rank"])
+
+                    # Convert bestmove to SAN (do NOT mutate the analysis board)
+                    bestmove_san = ""
+                    if bestmove_uci:
+                        try:
+                            bestmove_san = board.san(chess.Move.from_uci(bestmove_uci))
+                        except ValueError:
+                            bestmove_san = bestmove_uci
+
+                    # Convert PV UCI to SAN for each multipv line
+                    for mpv in multipv_results:
+                        pv_uci = mpv["pv_uci"]
+                        pv_san = []
+                        temp_board = board.copy()  # analysis position, unmodified
+                        for uci in pv_uci:
+                            try:
+                                move = chess.Move.from_uci(uci)
+                                pv_san.append(temp_board.san(move))
+                                temp_board.push(move)
+                            except ValueError:
+                                pv_san.append(uci)
+                        mpv["uci"] = pv_uci[0] if pv_uci else ""
+                        mpv["san"] = pv_san[0] if pv_san else ""
+                        mpv["pv_san"] = pv_san
+                        mpv["pv_text"] = " ".join(pv_san)
+
+                    # Overall stats from the first (rank 1) line at complete_depth
+                    overall = {}
+                    if multipv_results:
+                        first = multipv_results[0]
+                        overall = {
+                            "nodes": first.get("nodes", 0),
+                            "nps": first.get("nps", 0),
+                            "time_ms": first.get("time_ms", 0),
+                            "hashfull": first.get("hashfull", 0),
+                        }
+
+                    self._last_error = None
+                    return {
+                        "ok": True,
+                        "depth": complete_depth,
+                        "bestmove": {"uci": bestmove_uci, "san": bestmove_san},
+                        "multipv": multipv_results,
+                        **overall,
+                    }
+            except (RuntimeError, EOFError, BrokenPipeError) as e:
+                self._last_error = str(e)
+                if attempt == 0:
+                    self.respawn()
+                    continue
+                raise
 
     def _parse_info_line(self, line: str, board: chess.Board, rank: int) -> Optional[Dict[str, Any]]:
         """Parse a single UCI info line into a dict."""
@@ -364,6 +397,13 @@ class Engine:
             "pid": pid,
             "multipv_default": self.default_multipv,
             "alive": alive,
+            "book_path": BOOK_PATH if self._book_loaded else "",
+            "book_loaded": self._book_loaded,
+            "book_hits": self._book_hits,
+            "threads": self._threads,
+            "hash_mb": self._hash_mb,
+            "multipv": self.default_multipv,
+            "last_error": self._last_error,
         }
 
     def shutdown(self) -> None:
@@ -401,12 +441,42 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if path == "/health":
                 data = self.engine.health()
                 self._send_json(200, data)
+            elif path == "/":
+                self._send_html(200, self._dashboard_html(self.engine.health()))
             else:
                 self._send_json(404, {"ok": False, "error": "not found"})
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
         finally:
             self._log_request(start)
+
+    def _dashboard_html(self, h: Dict[str, Any]) -> str:
+        status = "ALIVE" if h.get("alive") else "DEAD"
+        color = "#22c55e" if h.get("alive") else "#ef4444"
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Duckish Bridge Status</title>
+<style>
+body{{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:2rem}}
+.card{{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1.5rem;max-width:600px;margin:auto}}
+h1{{margin:0 0 1rem;font-size:1.5rem}}
+.row{{display:flex;justify-content:space-between;padding:.4rem 0;border-bottom:1px solid #334155}}
+.row:last-child{{border-bottom:none}}
+.label{{color:#94a3b8}}
+.value{{font-family:ui-monospace,monospace;color:#fff}}
+.status{{color:{color};font-weight:600}}
+</style></head><body>
+<div class="card">
+<h1>Duckish Bridge</h1>
+<div class="row"><span class="label">Status</span><span class="value status">{status}</span></div>
+<div class="row"><span class="label">PID</span><span class="value">{h.get('pid','-')}</span></div>
+<div class="row"><span class="label">Book</span><span class="value">{h.get('book_path','-') or 'none'}</span></div>
+<div class="row"><span class="label">Book Loaded</span><span class="value">{h.get('book_loaded',False)}</span></div>
+<div class="row"><span class="label">Book Hits</span><span class="value">{h.get('book_hits',0)}</span></div>
+<div class="row"><span class="label">Threads</span><span class="value">{h.get('threads',1)}</span></div>
+<div class="row"><span class="label">Hash (MB)</span><span class="value">{h.get('hash_mb',256)}</span></div>
+<div class="row"><span class="label">MultiPV</span><span class="value">{h.get('multipv',3)}</span></div>
+<div class="row"><span class="label">Last Error</span><span class="value">{h.get('last_error') or 'none'}</span></div>
+</div></body></html>"""
 
     def do_POST(self) -> None:
         start = time.monotonic()
@@ -467,6 +537,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_cors()
         self.end_headers()
         self.wfile.write(json.dumps(data).encode("utf-8"))
+
+    def _send_html(self, status: int, html: str) -> None:
+        self.response_code = status
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self._send_cors()
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
 
     def _log_request(self, start: float) -> None:
         elapsed = int((time.monotonic() - start) * 1000)
