@@ -31,6 +31,7 @@ mod datagen;
 pub mod stats;
 
 mod bench;
+mod book;
 mod chess;
 mod cli;
 mod cuckoo;

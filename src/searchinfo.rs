@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use std::sync::{
-    Mutex, RwLock,
+    Condvar, Mutex, RwLock,
     atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     mpsc,
 };
 
 use crate::{
     chess::chessmove::Move,
-    search::{LMTable, parameters::Config},
+    search::{LMTable, parameters::Config, pv::PVariation},
     timemgmt::{SearchLimit, TimeManager},
     util::{BatchedAtomicCounter, MAX_DEPTH},
 };
@@ -61,6 +61,40 @@ pub struct SearchInfo<'a> {
     pub qfailhigh_index: [u64; MAX_POSITION_MOVES],
 }
 
+/// A task for a helper thread to search a single PV at a given depth.
+#[derive(Debug)]
+pub struct MultiPvTask {
+    /// The PV index (1-based, where 1 is the second PV).
+    pub pv_idx: usize,
+    /// The depth to search at.
+    pub depth: i32,
+    /// The alpha bound for aspiration window.
+    pub alpha: i32,
+    /// The beta bound for aspiration window.
+    pub beta: i32,
+    /// The delta for aspiration window.
+    pub delta: i32,
+    /// The reduction for aspiration window.
+    pub reduction: i32,
+    /// The draft depth for this PV (PV 1's effective depth).
+    pub pv1_draft: i32,
+    /// The moves to exclude (stems of previous PVs).
+    pub excluded_moves: Vec<Move>,
+}
+
+/// Result from a helper thread's MultiPV search.
+#[derive(Debug)]
+pub struct MultiPvResult {
+    /// The PV index this result corresponds to.
+    pub pv_idx: usize,
+    /// The principal variation found.
+    pub pv: PVariation,
+    /// The score of the PV.
+    pub score: i32,
+    /// Whether the search was stopped.
+    pub stopped: bool,
+}
+
 #[derive(Debug)]
 pub struct Control {
     pub quit: AtomicBool,
@@ -79,6 +113,16 @@ pub struct Control {
     pub root_excluded: RwLock<Vec<Move>>,
     /// Whether a search is currently in progress.
     pub searching: AtomicBool,
+    /// Task queue for parallel MultiPV: main thread pushes tasks, helpers pop.
+    pub multi_pv_tasks: Mutex<Vec<MultiPvTask>>,
+    /// Result queue for parallel MultiPV: helpers push results, main thread pops.
+    pub multi_pv_results: Mutex<Vec<MultiPvResult>>,
+    /// Condition variable for task queue synchronization.
+    pub multi_pv_cvar: Condvar,
+    /// Number of helper threads participating in MultiPV.
+    pub multi_pv_helpers: AtomicUsize,
+    /// Signal for helpers to exit their task loop.
+    pub multi_pv_shutdown: AtomicBool,
 }
 
 /// The maximum number of principal variations that can be requested.
@@ -100,6 +144,11 @@ impl Default for Control {
             multi_pv: RwLock::new(1),
             root_excluded: RwLock::new(Vec::new()),
             searching: AtomicBool::new(false),
+            multi_pv_tasks: Mutex::new(Vec::new()),
+            multi_pv_results: Mutex::new(Vec::new()),
+            multi_pv_cvar: Condvar::new(),
+            multi_pv_helpers: AtomicUsize::new(0),
+            multi_pv_shutdown: AtomicBool::new(false),
         }
     }
 }
@@ -136,6 +185,73 @@ impl Control {
     /// Whether the given root move is currently excluded from the search.
     pub fn is_excluded(&self, m: Move) -> bool {
         self.root_excluded.read().unwrap().contains(&m)
+    }
+
+    /// Register a helper thread for parallel MultiPV.
+    pub fn register_multi_pv_helper(&self) {
+        self.multi_pv_helpers.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Unregister a helper thread for parallel MultiPV.
+    pub fn unregister_multi_pv_helper(&self) {
+        self.multi_pv_helpers.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Get the number of registered MultiPV helpers.
+    pub fn multi_pv_helper_count(&self) -> usize {
+        self.multi_pv_helpers.load(Ordering::SeqCst)
+    }
+
+    /// Push a MultiPV task for helpers to process.
+    pub fn push_multi_pv_task(&self, task: MultiPvTask) {
+        let mut tasks = self.multi_pv_tasks.lock().unwrap();
+        tasks.push(task);
+        self.multi_pv_cvar.notify_one();
+    }
+
+    /// Pop a MultiPV task for a helper to process. Returns None if shutdown signaled.
+    pub fn pop_multi_pv_task(&self) -> Option<MultiPvTask> {
+        let mut tasks = self.multi_pv_tasks.lock().unwrap();
+        loop {
+            if self.multi_pv_shutdown.load(Ordering::SeqCst) {
+                return None;
+            }
+            if let Some(task) = tasks.pop() {
+                return Some(task);
+            }
+            tasks = self.multi_pv_cvar.wait(tasks).unwrap();
+        }
+    }
+
+    /// Push a MultiPV result from a helper.
+    pub fn push_multi_pv_result(&self, result: MultiPvResult) {
+        let mut results = self.multi_pv_results.lock().unwrap();
+        results.push(result);
+        self.multi_pv_cvar.notify_one();
+    }
+
+    /// Pop a MultiPV result for the main thread. Blocks until a result is available.
+    pub fn pop_multi_pv_result(&self) -> MultiPvResult {
+        let mut results = self.multi_pv_results.lock().unwrap();
+        loop {
+            if let Some(result) = results.pop() {
+                return result;
+            }
+            results = self.multi_pv_cvar.wait(results).unwrap();
+        }
+    }
+
+    /// Signal all MultiPV helpers to shut down.
+    pub fn shutdown_multi_pv_helpers(&self) {
+        self.multi_pv_shutdown.store(true, Ordering::SeqCst);
+        self.multi_pv_cvar.notify_all();
+    }
+
+    /// Reset MultiPV helper state for a new search.
+    pub fn reset_multi_pv_helpers(&self) {
+        self.multi_pv_shutdown.store(false, Ordering::SeqCst);
+        self.multi_pv_tasks.lock().unwrap().clear();
+        self.multi_pv_results.lock().unwrap().clear();
     }
 }
 

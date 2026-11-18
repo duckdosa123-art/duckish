@@ -24,6 +24,7 @@ use std::{
 use crate::{
     BRANDING, GIT_HASH, VERSION,
     bench::BENCH_POSITIONS,
+    book::set_book_path,
     chess::{
         board::{
             Board,
@@ -769,6 +770,12 @@ fn parse_setoption(
             let path = opt_value.to_string();
             tablebases::probe::init(&path, control);
         }
+        "BookPath" => {
+            let path = opt_value.to_string();
+            if let Err(e) = set_book_path(&path) {
+                eprintln!("info string failed to load book: {e}");
+            }
+        }
         "SyzygyProbeLimit" => {
             let value: u8 =
                 opt_value
@@ -896,6 +903,7 @@ fn print_uci_response(info: &SearchInfo, full: bool) {
     println!("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
     println!("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
     println!("option name Contempt type spin default 0 min -10000 max 10000");
+    println!("option name BookPath type string default <empty>");
     // println!("option name Ponder type check default false");
     println!("option name UCI_Chess960 type check default false");
     if full {

@@ -10,6 +10,7 @@ use std::{sync::atomic::Ordering, thread};
 use arrayvec::ArrayVec;
 
 use crate::{
+    book::probe_book,
     cfor,
     chess::{
         board::{
@@ -30,7 +31,7 @@ use crate::{
     lookups::HM_CLOCK_KEYS,
     movepicker::{MovePicker, Stage},
     search::pv::PVariation,
-    searchinfo::{MAX_MULTI_PV, SearchInfo},
+    searchinfo::{MAX_MULTI_PV, MultiPvResult, MultiPvTask, SearchInfo},
     tablebases::{self, probe::WDL},
     threadlocal::ThreadData,
     threadpool::{self, ScopeExt},
@@ -236,6 +237,34 @@ pub fn search_position(
         return (score, Some(best_move));
     }
 
+    // Probe the opening book at the root position.
+    // Only use book if we're in a game (has time controls) and not in analysis mode.
+    if thread_headers[0].info.clock.limits.dynamic().is_some()
+        && let Some(book_move) = probe_book(&thread_headers[0].board)
+    {
+        // Verify the book move is legal
+        if legal_moves.contains(&book_move) {
+            let pv = &mut thread_headers[0].pvs[1];
+            pv.load_from(book_move, &PVariation::new());
+            thread_headers[0].completed = 1;
+            readout_info(
+                &thread_headers[0],
+                &thread_headers[0].info,
+                Bound::Exact,
+                1,
+                true,
+            );
+            if thread_headers[0].info.print_to_stdout {
+                println!(
+                    "bestmove {}",
+                    book_move.display(thread_headers[0].board.rules())
+                );
+            }
+            // Book moves don't have a meaningful score, return 0
+            return (0, Some(book_move));
+        }
+    }
+
     let global_stopped = thread_headers[0].info.stopped;
     assert!(
         !global_stopped.load(Ordering::SeqCst),
@@ -243,13 +272,17 @@ pub fn search_position(
     );
 
     // start search threads:
-    // MultiPV is deliberately single-threaded: the main thread enumerates the
-    // root moves in a deterministic order, and helper threads would both disturb
-    // that ordering and let `select_best` override PV 1.
+    // MultiPV == 1: use Lazy SMP (helpers run full iterative_deepening).
+    // MultiPV > 1 with helpers: use parallel MultiPV (helpers run multi_pv_helper_loop).
+    // MultiPV > 1 without helpers: main thread runs all PVs sequentially.
     let multi_pv = thread_headers[0].info.control.multi_pv();
     let (t1, rest) = thread_headers.split_first_mut().unwrap();
     let (w1, rest_workers) = pool.split_first().unwrap();
+    let has_helpers = !rest_workers.is_empty();
+
     t1.info.control.searching.store(true, Ordering::SeqCst);
+    t1.info.control.reset_multi_pv_helpers();
+
     thread::scope(|s| {
         let mut handles = Vec::with_capacity(pool.len());
         handles.push(s.spawn_into(
@@ -259,7 +292,9 @@ pub fn search_position(
             },
             w1,
         ));
+
         if multi_pv == 1 {
+            // Lazy SMP: helpers run full search with empty time limits.
             for (t, w) in rest.iter_mut().zip(rest_workers) {
                 handles.push(s.spawn_into(
                     || {
@@ -269,11 +304,26 @@ pub fn search_position(
                     w,
                 ));
             }
+        } else if has_helpers {
+            // Parallel MultiPV: helpers run the task loop.
+            for (t, w) in rest.iter_mut().zip(rest_workers) {
+                handles.push(s.spawn_into(
+                    || {
+                        multi_pv_helper_loop(t);
+                    },
+                    w,
+                ));
+            }
         }
+        // If multi_pv > 1 but no helpers, main thread handles all PVs sequentially.
+
         for handle in handles {
             handle.join();
         }
     });
+
+    // Signal helpers to shut down (in case any are still waiting).
+    t1.info.control.shutdown_multi_pv_helpers();
     t1.info.control.searching.store(false, Ordering::SeqCst);
 
     let best_thread = select_best(thread_headers);
@@ -411,15 +461,122 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
         let mut pv1_draft = min_depth;
 
         let mut stopped = false;
+        // Determine if we should use parallel MultiPV: main thread, multi_pv > 1, and helpers available.
+        let use_parallel_multi_pv =
+            ThTy::MAIN_THREAD && multi_pv > 1 && t.info.control.multi_pv_helper_count() > 0;
+
         for pv_idx in 0..pv_count {
-            if pv_idx > 0 {
-                // exclude the moves we've already resolved, and reset the root
-                // state so that a fail-high from the previous PV can't leak in.
+            if pv_idx == 0 {
+                // PV 1 always runs on the main thread with full aspiration window reporting.
+                // aspiration loop:
+                loop {
+                    let root_draft = (t.root_depth - reduction).max(min_depth);
+                    pv1_draft = root_draft;
+                    t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
+                    if t.info.check_up() {
+                        stopped = true;
+                        break;
+                    }
+
+                    if t.score_scratch <= alpha {
+                        if multi_pv == 1 {
+                            readout_info(
+                                t,
+                                &t.info,
+                                Bound::Upper,
+                                t.info.nodes.get_global(),
+                                false,
+                            );
+                            t.info.clock.report_aspiration_fail(
+                                t.root_depth,
+                                Bound::Upper,
+                                &t.info.conf,
+                            );
+                        }
+                        beta = i32::midpoint(alpha, beta);
+                        alpha = (t.score_scratch - delta).max(-INFINITY);
+                        reduction = 0;
+                        t.revert_best_line();
+                    } else if t.score_scratch >= beta {
+                        t.update_best_line();
+                        if multi_pv == 1 {
+                            readout_info(
+                                t,
+                                &t.info,
+                                Bound::Lower,
+                                t.info.nodes.get_global(),
+                                false,
+                            );
+                            t.info.clock.report_aspiration_fail(
+                                t.root_depth,
+                                Bound::Lower,
+                                &t.info.conf,
+                            );
+                        }
+                        beta = (t.score_scratch + delta).min(INFINITY);
+                        reduction += 1;
+                        if !is_decisive(t.score_scratch) {
+                            t.root_depth = (t.root_depth - 1).max(min_depth);
+                        }
+                    } else {
+                        t.update_best_line();
+                        break;
+                    }
+
+                    delta += delta
+                        * (t.info.conf.delta_base_mul
+                            + t.info.conf.delta_reduction_mul * reduction)
+                        / 128;
+                }
+
+                if stopped {
+                    break;
+                }
+
+                let Some(&best) = t.pv_scratch[0].moves.first() else {
+                    break;
+                };
+
+                pv_results.push((t.pv_scratch[0].clone(), t.score_scratch));
+                resolved.push(best);
+            } else if use_parallel_multi_pv {
+                // Dispatch PV search to a helper thread.
+                let task = MultiPvTask {
+                    pv_idx,
+                    depth: pv1_draft,
+                    alpha: -INFINITY,
+                    beta: INFINITY,
+                    delta: t.info.conf.delta_initial,
+                    reduction: 0,
+                    pv1_draft,
+                    excluded_moves: resolved.to_vec(),
+                };
+                t.info.control.push_multi_pv_task(task);
+
+                // Wait for result from helper.
+                let result = t.info.control.pop_multi_pv_result();
+                if result.pv_idx != pv_idx {
+                    // This shouldn't happen with proper synchronization, but handle gracefully.
+                    eprintln!(
+                        "info string warning MultiPV result index mismatch: expected {pv_idx}, got {}",
+                        result.pv_idx
+                    );
+                }
+                if result.stopped {
+                    stopped = true;
+                    break;
+                }
+
+                let best = result.pv.moves.first().copied();
+                pv_results.push((result.pv, result.score));
+                if let Some(best) = best {
+                    resolved.push(best);
+                } else {
+                    break;
+                }
+            } else {
+                // Sequential fallback: run on main thread (original behavior).
                 t.info.control.set_excluded(resolved.to_vec());
-                // search every PV at PV 1's effective draft; that removes the
-                // one-ply-deeper inversions, though a few centipawns of
-                // non-monotonicity can still occur at equal draft because the
-                // excluded root set changes TT hits and pruning.
                 t.root_depth = pv1_draft;
                 t.score_scratch = VALUE_NONE;
                 t.pv_scratch[0].moves.clear();
@@ -427,80 +584,50 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
                 beta = INFINITY;
                 delta = t.info.conf.delta_initial;
                 reduction = 0;
-            }
 
-            // aspiration loop:
-            loop {
-                let root_draft = (t.root_depth - reduction).max(min_depth);
-                if pv_idx == 0 {
-                    pv1_draft = root_draft;
+                // aspiration loop:
+                loop {
+                    let root_draft = (t.root_depth - reduction).max(min_depth);
+                    t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
+                    if t.info.check_up() {
+                        stopped = true;
+                        break;
+                    }
+
+                    if t.score_scratch <= alpha {
+                        beta = i32::midpoint(alpha, beta);
+                        alpha = (t.score_scratch - delta).max(-INFINITY);
+                        reduction = 0;
+                        t.revert_best_line();
+                    } else if t.score_scratch >= beta {
+                        beta = (t.score_scratch + delta).min(INFINITY);
+                        reduction += 1;
+                        if !is_decisive(t.score_scratch) {
+                            t.root_depth = (t.root_depth - 1).max(min_depth);
+                        }
+                    } else {
+                        break;
+                    }
+
+                    delta += delta
+                        * (t.info.conf.delta_base_mul
+                            + t.info.conf.delta_reduction_mul * reduction)
+                        / 128;
                 }
-                t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
-                if t.info.check_up() {
-                    // we've been told to stop searching: publish whatever PVs
-                    // completed at this depth once the loop has unwound.
-                    stopped = true;
+
+                t.info.control.clear_excluded();
+
+                if stopped {
                     break;
                 }
 
-                if t.score_scratch <= alpha {
-                    if ThTy::MAIN_THREAD && multi_pv == 1 {
-                        readout_info(t, &t.info, Bound::Upper, t.info.nodes.get_global(), false);
-                        t.info.clock.report_aspiration_fail(
-                            t.root_depth,
-                            Bound::Upper,
-                            &t.info.conf,
-                        );
-                    }
-                    beta = i32::midpoint(alpha, beta);
-                    alpha = (t.score_scratch - delta).max(-INFINITY);
-                    reduction = 0;
-                    // search failed low, so we might have to
-                    // revert a fail-high pv update
-                    t.revert_best_line();
-                } else if t.score_scratch >= beta {
-                    // only PV 1 is allowed to update the main line.
-                    if pv_idx == 0 {
-                        t.update_best_line();
-                    }
-                    if ThTy::MAIN_THREAD && multi_pv == 1 {
-                        readout_info(t, &t.info, Bound::Lower, t.info.nodes.get_global(), false);
-                        t.info.clock.report_aspiration_fail(
-                            t.root_depth,
-                            Bound::Lower,
-                            &t.info.conf,
-                        );
-                    }
-                    beta = (t.score_scratch + delta).min(INFINITY);
-                    reduction += 1;
-                    // decrement depth:
-                    if !is_decisive(t.score_scratch) {
-                        t.root_depth = (t.root_depth - 1).max(min_depth);
-                    }
-                } else {
-                    // only PV 1 is allowed to update the main line.
-                    if pv_idx == 0 {
-                        t.update_best_line();
-                    }
+                let Some(&best) = t.pv_scratch[0].moves.first() else {
                     break;
-                }
+                };
 
-                delta += delta
-                    * (t.info.conf.delta_base_mul + t.info.conf.delta_reduction_mul * reduction)
-                    / 128;
+                pv_results.push((t.pv_scratch[0].clone(), t.score_scratch));
+                resolved.push(best);
             }
-
-            if stopped {
-                break;
-            }
-
-            let Some(&best) = t.pv_scratch[0].moves.first() else {
-                // every root move is excluded, so there's nothing left to search.
-                break;
-            };
-
-            pv_results.push((t.pv_scratch[0].clone(), t.score_scratch));
-            resolved.push(best);
         }
 
         // rank, report and adopt the completed PVs, then drop the exclusions
@@ -2192,6 +2319,118 @@ fn finish_pv_batch(
     };
     // publish the ranked best, so it drives the best line and `bestmove`.
     t.update_best_line();
+}
+
+/// Search a single PV at a given depth with the given aspiration window and exclusions.
+/// This is the core per-PV search logic, extracted so it can be run on helper threads.
+/// Returns the PV, score, and whether the search was stopped.
+fn search_single_pv(
+    t: &mut ThreadData,
+    pv_idx: usize,
+    depth: i32,
+    mut alpha: i32,
+    mut beta: i32,
+    mut delta: i32,
+    mut reduction: i32,
+    _pv1_draft: i32,
+    excluded_moves: Vec<Move>,
+    min_depth: i32,
+    _multi_pv: usize,
+) -> (PVariation, i32, bool) {
+    // Set up exclusions for this PV
+    if pv_idx > 0 {
+        t.info.control.set_excluded(excluded_moves);
+    }
+
+    // Reset root state for this PV
+    t.root_depth = depth;
+    t.score_scratch = VALUE_NONE;
+    t.pv_scratch[0].moves.clear();
+
+    let mut stopped = false;
+
+    // Aspiration loop
+    loop {
+        let root_draft = (t.root_depth - reduction).max(min_depth);
+        t.score_scratch = alpha_beta::<Root>(t, root_draft, alpha, beta, false);
+        if t.info.check_up() {
+            stopped = true;
+            break;
+        }
+
+        if t.score_scratch <= alpha {
+            beta = i32::midpoint(alpha, beta);
+            alpha = (t.score_scratch - delta).max(-INFINITY);
+            reduction = 0;
+            t.revert_best_line();
+        } else if t.score_scratch >= beta {
+            beta = (t.score_scratch + delta).min(INFINITY);
+            reduction += 1;
+            if !is_decisive(t.score_scratch) {
+                t.root_depth = (t.root_depth - 1).max(min_depth);
+            }
+        } else {
+            break;
+        }
+
+        delta += delta * (t.info.conf.delta_base_mul + t.info.conf.delta_reduction_mul * reduction)
+            / 128;
+    }
+
+    // Clear exclusions after this PV
+    if pv_idx > 0 {
+        t.info.control.clear_excluded();
+    }
+
+    let pv = t.pv_scratch[0].clone();
+    let score = t.score_scratch;
+    (pv, score, stopped)
+}
+
+/// Helper thread loop for parallel MultiPV.
+/// Waits for tasks from the main thread, executes them, and returns results.
+fn multi_pv_helper_loop(t: &mut ThreadData) {
+    t.info.control.register_multi_pv_helper();
+    loop {
+        let Some(task) = t.info.control.pop_multi_pv_task() else {
+            // Shutdown signaled
+            t.info.control.unregister_multi_pv_helper();
+            return;
+        };
+
+        // The helper thread searches at the given depth with the given parameters.
+        // We use the helper's own ThreadData (board, histories, etc.) but with the
+        // main thread's root position and exclusions.
+        // The board is already at the root position since helpers don't search otherwise.
+
+        let min_depth = (task.depth / 2).max(1);
+        let (pv, score, stopped) = search_single_pv(
+            t,
+            task.pv_idx,
+            task.depth,
+            task.alpha,
+            task.beta,
+            task.delta,
+            task.reduction,
+            task.pv1_draft,
+            task.excluded_moves,
+            min_depth,
+            t.info.control.multi_pv(),
+        );
+
+        let result = MultiPvResult {
+            pv_idx: task.pv_idx,
+            pv,
+            score,
+            stopped,
+        };
+        t.info.control.push_multi_pv_result(result);
+
+        if stopped {
+            // If search was stopped, we'll get shutdown signal next iteration
+            continue;
+        }
+    }
 }
 
 /// Print the info about an iteration of the search.
