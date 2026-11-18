@@ -26,7 +26,8 @@ const state = {
   panel: null,
   svg: null,
   debounceTimer: null,
-  gameOverSent: false
+  gameOverSent: false,
+  playerColor: "white"
 };
 
 // -----------------------------------------------------------------------------
@@ -54,7 +55,10 @@ function extractMoves() {
 
 function getOrientation() {
   const board = document.querySelector("wc-chess-board");
-  return board && board.classList.contains("flipped") ? "b" : "w";
+  const isFlipped = board && board.classList.contains("flipped");
+  const orientation = isFlipped ? "b" : "w";
+  state.playerColor = isFlipped ? "black" : "white";
+  return orientation;
 }
 
 // -----------------------------------------------------------------------------
@@ -68,42 +72,66 @@ function detectGameResult() {
     ".game-over",
     "[data-testid='game-over']",
     ".archive-game-result",
-    ".game-result"
+    ".game-result",
+    ".game-over-modal-content",
+    ".modal-game-over-component",
+    "[class*='game-over-header']",
+    ".board-layout-sidebar",
+    ".board-layout-main"
   ];
   
+  // Also search for result strings anywhere in board/sidebar containers
+  const resultStrings = [
+    "you won",
+    "white won",
+    "black won",
+    "checkmate",
+    "resignation",
+    "resigned",
+    "draw",
+    "stalemate",
+    "insufficient material",
+    "threefold repetition",
+    "50 move rule",
+    "timeout",
+    "abandoned"
+  ];
+  
+  // Check explicit result elements first
   for (const sel of resultSelectors) {
     const el = document.querySelector(sel);
     if (el) {
       const text = el.textContent.toLowerCase();
-      if (text.includes("checkmate") || text.includes("resign") || text.includes("timeout") || text.includes("abandon")) {
-        // Determine winner from text
-        if (text.includes("white") && (text.includes("won") || text.includes("victory") || text.includes("checkmate"))) {
-          return { result: "win", winner: "white" };
+      for (const rs of resultStrings) {
+        if (text.includes(rs)) {
+          // Determine winner from text
+          if (rs === "you won") {
+            return { result: "win", winner: state.playerColor };
+          }
+          if (rs === "white won" || (text.includes("white") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+            return { result: "win", winner: "white" };
+          }
+          if (rs === "black won" || (text.includes("black") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+            return { result: "win", winner: "black" };
+          }
+          if (rs === "draw" || rs === "stalemate" || rs === "insufficient material" || rs === "threefold repetition" || rs === "50 move rule") {
+            return { result: "draw", winner: "draw" };
+          }
+          if (rs === "checkmate" || rs === "resignation" || rs === "resigned" || rs === "timeout" || rs === "abandoned") {
+            // Try to infer winner from context
+            if (text.includes("white") && !text.includes("black")) {
+              return { result: "win", winner: "white" };
+            }
+            if (text.includes("black") && !text.includes("white")) {
+              return { result: "win", winner: "black" };
+            }
+            // Generic - will be resolved server-side
+            return { result: "win", winner: null };
+          }
         }
-        if (text.includes("black") && (text.includes("won") || text.includes("victory") || text.includes("checkmate"))) {
-          return { result: "win", winner: "black" };
-        }
-        if (text.includes("draw") || text.includes("stalemate") || text.includes("insufficient") || text.includes("repetition") || text.includes("50 move")) {
-          return { result: "draw", winner: "draw" };
-        }
-        // Generic win/loss detection
-        if (text.includes("won") || text.includes("victory") || text.includes("checkmate")) {
-          // Can't determine color, return generic
-          return { result: "win", winner: null };
-        }
-        if (text.includes("lost") || text.includes("defeat") || text.includes("resign")) {
-          return { result: "loss", winner: null };
-        }
-      }
-      if (text.includes("draw") || text.includes("stalemate") || text.includes("insufficient") || text.includes("repetition") || text.includes("50 move")) {
-        return { result: "draw", winner: "draw" };
       }
     }
   }
-  
-  // Also check for game over by looking at clock/turn indicators
-  // If no legal moves and not in check = stalemate, if in check = checkmate
-  // But this is hard to detect from DOM alone. We'll rely on explicit result elements.
   
   return null;
 }
@@ -158,15 +186,32 @@ function onBoardChanged() {
   const movesKey = JSON.stringify(moves);
   const currentMovesKey = JSON.stringify(state.moves);
   
+  // Determine whose turn it is from move count
+  const turnColor = moves.length % 2 === 0 ? "white" : "black";
+  
   // Check for game over
   const gameResult = detectGameResult();
   if (gameResult && !state.gameOverSent && moves.length > 0) {
     sendGameOver(gameResult.result, gameResult.winner, moves);
   }
   
-  // Reset gameOverSent if moves changed (new game started)
-  if (movesKey !== currentMovesKey) {
+  // Reset gameOverSent if new game started (moves reset to 0 or 1)
+  if (moves.length <= 1) {
     state.gameOverSent = false;
+  }
+  
+  // Strict turn guard: only analyze/draw arrows on player's turn
+  if (turnColor !== state.playerColor) {
+    if (state.svg) {
+      state.svg.remove();
+      state.svg = null;
+    }
+    const body = document.getElementById("duckish-body");
+    if (body) {
+      body.innerHTML = `<div style="text-align:center;color:#9ca3af;padding:20px;">Waiting for opponent...</div>`;
+    }
+    setStatus("waiting", "#6b7280");
+    return;
   }
   
   if (movesKey !== currentMovesKey || orientation !== state.orientation) {
@@ -377,6 +422,17 @@ function analyze() {
       try {
         const parsed = JSON.parse(res.responseText);
         if (parsed.ok) {
+          // Double-check turn from server matches player color
+          if (parsed.turn && parsed.turn !== state.playerColor) {
+            if (state.svg) { state.svg.remove(); state.svg = null; }
+            const body = document.getElementById("duckish-body");
+            if (body) {
+              body.innerHTML = `<div style="text-align:center;color:#9ca3af;padding:20px;">Waiting for opponent...</div>`;
+            }
+            setStatus("waiting", "#6b7280");
+            state.running = false;
+            return;
+          }
           state.lastResult = parsed;
           setStatus("ready", "#34d399");
           render();

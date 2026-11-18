@@ -588,6 +588,9 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
 
         result = self.engine.analyze(moves, movetime, multipv, depth)
 
+        # Add turn information for client-side validation
+        result["turn"] = "white" if len(moves) % 2 == 0 else "black"
+
         # Apply learned adjustments
         if result.get("ok") and result.get("multipv"):
             board = self._moves_to_board(moves)
@@ -604,6 +607,32 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
         board = self._moves_to_board(moves)
         if board.is_game_over():
             self._run_post_mortem_if_needed(moves, board)
+
+        # Game-over inference: if moves reset to <= 1 after a tracked game of >= 8 plies
+        if len(moves) <= 1 and len(self._current_game_moves) >= 8:
+            final_board = self._moves_to_board(self._current_game_moves)
+            final_score = None
+            try:
+                analysis = self.engine.analyze(self._current_game_moves, 200, 1, depth=12)
+                if analysis.get("ok") and analysis.get("multipv"):
+                    final_score = analysis["multipv"][0].get("score_cp")
+            except Exception:
+                pass
+            # Determine result from final score perspective of the player who just moved
+            # final_score is from side to move's perspective (the opponent)
+            # So for the player who made the last move, their perspective is -final_score
+            inferred_result = "draw"
+            inferred_winner = "draw"
+            if final_score is not None:
+                player_score = -final_score  # perspective of player who made last move
+                if player_score > 300:
+                    inferred_result = "win"
+                    inferred_winner = "white" if (len(self._current_game_moves) - 1) % 2 == 0 else "black"
+                elif player_score < -300:
+                    inferred_result = "loss"
+                    inferred_winner = "black" if (len(self._current_game_moves) - 1) % 2 == 0 else "white"
+            self._run_post_mortem(self._current_game_moves, final_board, inferred_result, inferred_winner)
+            self._current_game_moves = []
 
         self._send_json(200, result)
 
