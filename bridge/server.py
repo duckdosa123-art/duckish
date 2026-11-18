@@ -27,6 +27,8 @@ DEFAULT_MOVETIME = 400  # ms
 HANDSHAKE_TIMEOUT = 10  # seconds
 ANALYSIS_TIMEOUT = 15   # seconds
 BOOK_PATH = os.environ.get("DUCKISH_BOOK_PATH", "")
+if not BOOK_PATH:
+    BOOK_PATH = os.path.join(REPO_ROOT, "Performance.bin")
 
 # ---- Engine Subprocess Management -------------------------------------------
 
@@ -77,7 +79,7 @@ class Engine:
         self._read_until(lambda line: line.strip() == "readyok", HANDSHAKE_TIMEOUT)
         self._send(f"setoption name Hash value 256")
         self._send(f"setoption name MultiPV value {self.default_multipv}")
-        if BOOK_PATH:
+        if BOOK_PATH and os.path.isfile(BOOK_PATH):
             self._send(f"setoption name BookPath value {BOOK_PATH}")
         # No need to wait for setoption ack
 

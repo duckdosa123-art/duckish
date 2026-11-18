@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--threads-b", type=int, default=1, help="Threads for engine B")
     parser.add_argument("--json-out", default="", help="Optional JSON output path")
     parser.add_argument("--games", type=int, default=40, help="Total games (rounded down to even)")
+    parser.add_argument("--book", default="", help="Optional book file path for engine B (or both)")
     return parser.parse_args()
 
 
@@ -109,6 +110,11 @@ def main():
 
         configure_engine(engine_a, args.hash_a, args.threads_a)
         configure_engine(engine_b, args.hash_b, args.threads_b)
+
+        if args.book:
+            if "BookPath" in engine_b.options:
+                engine_b.configure({"BookPath": args.book})
+                print(f"BOOK {args.book}")
 
         print(f"A={args.engine_a}  threads={args.threads_a}  hash={args.hash_a}MB")
         print(f"B={args.engine_b}  threads={args.threads_b}  hash={args.hash_b}MB")
