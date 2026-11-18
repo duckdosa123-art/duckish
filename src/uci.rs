@@ -58,6 +58,15 @@ const UCI_MAX_THREADS: usize = 512;
 const BENCH_DEPTH: usize = 14;
 const BENCH_THREADS: usize = 1;
 
+/// Get the default number of threads based on available parallelism.
+/// Falls back to 1 if unavailable.
+fn default_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, UCI_MAX_THREADS)
+}
+
 // Retained for callers that want the upstream package version (the UCI identity
 // reports `BRANDING` instead).
 #[allow(dead_code, reason = "kept for callers that want the package version")]
@@ -76,7 +85,8 @@ static STDIN_READER_THREAD_KEEP_RUNNING: AtomicBool = AtomicBool::new(true);
 pub fn main_loop() -> Result<(), UciError> {
     println!("{BRANDING}");
 
-    let mut worker_threads = threadpool::make_worker_threads(1);
+    let default_threads = default_thread_count();
+    let mut worker_threads = threadpool::make_worker_threads(default_threads);
 
     let mut cache = Cache::new();
     cache.resize(UCI_DEFAULT_HASH_MEGABYTES * MEGABYTE, &worker_threads); // default hash size
@@ -891,12 +901,13 @@ fn stdin_reader_worker(sender: mpsc::Sender<String>, control: &Control) -> Resul
 }
 
 fn print_uci_response(info: &SearchInfo, full: bool) {
+    let default_threads = default_thread_count();
     println!("id name {BRANDING}");
     println!("id author Cosmo");
     println!(
         "option name Hash type spin default {UCI_DEFAULT_HASH_MEGABYTES} min 1 max {UCI_MAX_HASH_MEGABYTES}"
     );
-    println!("option name Threads type spin default 1 min 1 max 512");
+    println!("option name Threads type spin default {default_threads} min 1 max {UCI_MAX_THREADS}");
     println!("option name MultiPV type spin default 1 min 1 max {MAX_MULTI_PV}");
     println!("option name PrettyPrint type check default false");
     println!("option name SyzygyPath type string default <empty>");

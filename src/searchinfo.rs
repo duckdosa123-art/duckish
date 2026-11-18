@@ -118,7 +118,9 @@ pub struct Control {
     /// Result queue for parallel MultiPV: helpers push results, main thread pops.
     pub multi_pv_results: Mutex<Vec<MultiPvResult>>,
     /// Condition variable for task queue synchronization.
-    pub multi_pv_cvar: Condvar,
+    pub multi_pv_task_cvar: Condvar,
+    /// Condition variable for result queue synchronization.
+    pub multi_pv_result_cvar: Condvar,
     /// Number of helper threads participating in MultiPV.
     pub multi_pv_helpers: AtomicUsize,
     /// Signal for helpers to exit their task loop.
@@ -146,7 +148,8 @@ impl Default for Control {
             searching: AtomicBool::new(false),
             multi_pv_tasks: Mutex::new(Vec::new()),
             multi_pv_results: Mutex::new(Vec::new()),
-            multi_pv_cvar: Condvar::new(),
+            multi_pv_task_cvar: Condvar::new(),
+            multi_pv_result_cvar: Condvar::new(),
             multi_pv_helpers: AtomicUsize::new(0),
             multi_pv_shutdown: AtomicBool::new(false),
         }
@@ -206,7 +209,7 @@ impl Control {
     pub fn push_multi_pv_task(&self, task: MultiPvTask) {
         let mut tasks = self.multi_pv_tasks.lock().unwrap();
         tasks.push(task);
-        self.multi_pv_cvar.notify_one();
+        self.multi_pv_task_cvar.notify_one();
     }
 
     /// Pop a MultiPV task for a helper to process. Returns None if shutdown signaled.
@@ -219,7 +222,7 @@ impl Control {
             if let Some(task) = tasks.pop() {
                 return Some(task);
             }
-            tasks = self.multi_pv_cvar.wait(tasks).unwrap();
+            tasks = self.multi_pv_task_cvar.wait(tasks).unwrap();
         }
     }
 
@@ -227,24 +230,28 @@ impl Control {
     pub fn push_multi_pv_result(&self, result: MultiPvResult) {
         let mut results = self.multi_pv_results.lock().unwrap();
         results.push(result);
-        self.multi_pv_cvar.notify_one();
+        self.multi_pv_result_cvar.notify_one();
     }
 
-    /// Pop a MultiPV result for the main thread. Blocks until a result is available.
-    pub fn pop_multi_pv_result(&self) -> MultiPvResult {
+    /// Pop a MultiPV result for the main thread. Returns None if shutdown signaled.
+    pub fn pop_multi_pv_result(&self) -> Option<MultiPvResult> {
         let mut results = self.multi_pv_results.lock().unwrap();
         loop {
-            if let Some(result) = results.pop() {
-                return result;
+            if self.multi_pv_shutdown.load(Ordering::SeqCst) {
+                return None;
             }
-            results = self.multi_pv_cvar.wait(results).unwrap();
+            if let Some(result) = results.pop() {
+                return Some(result);
+            }
+            results = self.multi_pv_result_cvar.wait(results).unwrap();
         }
     }
 
     /// Signal all MultiPV helpers to shut down.
     pub fn shutdown_multi_pv_helpers(&self) {
         self.multi_pv_shutdown.store(true, Ordering::SeqCst);
-        self.multi_pv_cvar.notify_all();
+        self.multi_pv_task_cvar.notify_all();
+        self.multi_pv_result_cvar.notify_all();
     }
 
     /// Reset MultiPV helper state for a new search.

@@ -554,7 +554,11 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
                 t.info.control.push_multi_pv_task(task);
 
                 // Wait for result from helper.
-                let result = t.info.control.pop_multi_pv_result();
+                let Some(result) = t.info.control.pop_multi_pv_result() else {
+                    // Shutdown signaled - stop searching
+                    stopped = true;
+                    break;
+                };
                 if result.pv_idx != pv_idx {
                     // This shouldn't happen with proper synchronization, but handle gracefully.
                     eprintln!(
@@ -641,6 +645,8 @@ fn iterative_deepening<ThTy: SmpThreadType>(t: &mut ThreadData) {
         );
         t.info.control.clear_excluded();
         if stopped {
+            // Unblock any idle helpers waiting for tasks/results
+            t.info.control.shutdown_multi_pv_helpers();
             break 'deepening;
         }
 
@@ -2448,9 +2454,10 @@ fn multi_pv_helper_loop(t: &mut ThreadData) {
         };
         t.info.control.push_multi_pv_result(result);
 
-        if stopped {
-            // If search was stopped, we'll get shutdown signal next iteration
-            continue;
+        // Exit if search was stopped or quit was requested
+        if stopped || t.info.control.quit.load(Ordering::SeqCst) {
+            t.info.control.unregister_multi_pv_helper();
+            return;
         }
     }
 }
