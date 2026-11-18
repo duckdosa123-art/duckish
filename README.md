@@ -11,6 +11,47 @@
 >
 > Engine strength and search behaviour are unchanged from upstream when `MultiPV = 1`.
 
+## Quickstart
+
+### 1. Prerequisites
+- **Rust** (latest stable via [rustup](https://rustup.rs/))
+- Optional: **clang** (for Fathom Syzygy tablebase support)
+
+### 2. Build `duckish.exe`
+1. Download `viridithas.nnue.zst` from the latest release of [cosmobobak/viridithas-networks](https://github.com/cosmobobak/viridithas-networks/releases) and place it in the repo root.
+2. Build with native optimizations:
+   - **Windows (PowerShell)**:
+     ```powershell
+     $env:RUSTFLAGS="-C target-cpu=native"
+     cargo b -r --features syzygy,bindgen
+     ```
+   - **Linux / macOS**:
+     ```bash
+     RUSTFLAGS="-C target-cpu=native" cargo build --release --features syzygy,bindgen
+     ```
+3. Output binary: `target/release/duckish.exe` (or `target/release/duckish` on Unix).
+
+### 3. Optional Polyglot Opening Book
+- Place a `.bin` book file (e.g. `Performance.bin`) in the repo root.
+- `*.bin` is gitignored, so it stays local-only.
+- The bridge auto-wires it via the engine's `BookPath` UCI option when the file exists.
+
+### 4. Local HTTP Bridge (Python)
+```bash
+pip install -r bridge/requirements.txt   # python-chess
+python -m bridge.server --port 5000
+```
+- **Live debug dashboard**: open <http://127.0.0.1:5000> (engine status, book, Experience Book stats).
+- **Analysis endpoint**: `POST /analyze` with a SAN move list → returns ranked candidates with UCI + SAN PVs.
+- **Health check**: `GET /health`.
+
+### 5. Tampermonkey Userscript (Chess.com Advisor Overlay)
+1. Install **Tampermonkey** in Chrome / Opera GX / Edge.
+2. Create a new script, paste the full contents of `userscript/duckish-advisor.user.js`, save.
+3. Visit a Chess.com game or bot page.
+4. Allow `127.0.0.1` local connections when prompted.
+5. Use for **offline self-study**, **post-game review**, and **computer bot practice**. The script talks **only** to the local bridge; no external service is contacted.
+
 <div align="center">
 
   ![Logo](assets/images/logo2.png)
@@ -97,6 +138,20 @@ The one thing we could not find in a published engine is the deliberate rule **f
 - The bridge auto-wires it: with `DUCKISH_BOOK_PATH` unset it defaults the engine's `BookPath` option to `<repo root>/Performance.bin` and sends `setoption name BookPath value <abs path>` when the file exists.
 - The engine probes the book at the root for time-based `go` commands (wtime/btime/movetime), so the advisor gets instant opening moves; `go depth` bypasses the book and searches directly.
 - Live E2E on this machine: startpos -> `bestmove e2e4 ponder c7c5`; after `1.e4 e5` -> `bestmove g1f3 ponder g8f6`. Both instant book hits, clean exit.
+
+### What Changed vs. Upstream Viridithas
+
+| Feature | Upstream Viridithas | Duckish 1.0 |
+|---|---|---|
+| MultiPV | Not present | Native 1-10, root-exclusion re-search; PVs ranked by score so `multipv 1` == `bestmove`. **Runs single-threaded when > 1.** |
+| Internal Iterative Deepening | Not present | Depth-1 shallow pass on TT miss before full-depth search. |
+| Polyglot opening book probing | Not present | `.bin` book probed at root for time-based `go` (wtime/btime/movetime). |
+| CPU thread scaling | Hardcoded `Threads = 1` | Dynamic `available_parallelism()`; half-physical-cores default, `setoption` override. |
+| Transposition hash default | 16 MB | 256 MB. |
+| Bridge HTTP server | None | `bridge/server.py` + `bridge/experience.py`: live SQLite mistake-learning book with auto-respawn + debug dashboard at `http://127.0.0.1:5000`. |
+| Chess.com userscript overlay | None | `userscript/duckish-advisor.user.js`: Tampermonkey advisor for offline study, post-game review, bot practice (local-only). |
+
+> **Caveat**: `MultiPV > 1` runs single-threaded for deterministic candidate ordering. Engine strength and search behaviour are unchanged from upstream when `MultiPV = 1`.
 
 ## Building Viridithas
 
