@@ -33,6 +33,44 @@ The Viridithas project prides itself on using original training data for its neu
 
 PS: Viridithas is enormously fond of the [Stormphrax](https://github.com/Ciekce/Stormphrax) chess engine.
 
+## Benchmarks & Match Results
+
+Duckish 1.0 measured against unmodified upstream Viridithas (`upstream/master`, `4609ff2`) on the same machine: 4 physical cores / 8 logical threads, Windows 11. Both binaries were built from source with `RUSTFLAGS="-C target-cpu=native" cargo build --release` and the same embedded Hyperion NNUE, so any difference below is engine behaviour, not toolchain.
+
+### Search speed (`bench`)
+
+Median of 3 runs per configuration.
+
+| Configuration | Nodes | Median NPS | Note |
+|---|---|---|---|
+| Upstream, 1 thread | 3,385,283 | 425,502 | `bench` |
+| Duckish, 1 thread | 3,385,283 | 431,493 | `bench`, same nodes as upstream |
+| Duckish, 1 thread | 7,661,282 | 432,421 | `bench 16 1` |
+| Duckish, 2 threads | 11.9M - 13.1M | 688,299 | `bench 16 2`, 1.59x NPS |
+
+Identical node counts in the first two rows are the useful signal: the `MultiPV 1` search tree is unchanged from upstream, so the fork adds no search regression. Lazy SMP scales to roughly 1.6x NPS on 2 threads; node totals vary between runs because the threads diverge.
+
+### Match results
+
+40 games each (20 openings x 2 colours), 100 ms per move, single PV, 240-ply cap, run with `scripts/match.py`.
+
+| Match | Duckish | Upstream | W-L-D | Score | Elo (95% CI) |
+|---|---|---|---|---|---|
+| Equal settings | 1 thread, 64 MB | 1 thread, 64 MB | 4-7-29 | 0.4625 | -26 [-84, +31] |
+| Out of the box | 2 threads, 256 MB | 1 thread, 16 MB | 11-2-27 | 0.6125 | +80 [+21, +143] |
+
+The equal-settings match is the regression test: the 95% interval straddles zero, which is what an unchanged search should look like. The out-of-the-box match is the practical number: Duckish's defaults (2 threads, 256 MB) score +80 Elo against stock Viridithas at bullet time control.
+
+Caveats worth keeping:
+
+- 40 games resolves roughly +/-60 Elo at 95% confidence; treat the point estimates as indicative, not precise.
+- These are 100 ms/move bullet games. Multi-thread gains grow at longer time controls, so the +80 figure is not the engine's strength at tournament control.
+- Fixed openings, no SPRT, single machine, one core count. Reproduce with `scripts/match.py --threads-a N --threads-b N --hash-a N --hash-b N`; rebuild the baseline with `git worktree add ../duckish-base upstream/master` and copy `viridithas.nnue.zst` into that directory before building.
+
+### Multi-line analysis
+
+Upstream declares no `MultiPV` option at all; `setoption name MultiPV` is a Duckish addition (`spin`, default 1, min 1, max 10). That is the whole advisor delta, and it is not free: `MultiPV > 1` runs N root searches per depth single-threaded, so the bridge defaults to a 400 ms budget and the userscript exposes a Fast (1) / Analysis (3) toggle.
+
 ## Building Viridithas
 
 If you just want one of the official releases of Viridithas, check out the **Releases** tab on the right.
