@@ -1293,8 +1293,30 @@ pub fn alpha_beta<NT: NodeType>(
     // clear out the next killer move.
     t.killer_move_table[height + 1] = None;
 
-    let tt_move = cached.and_then(|e| e.mov);
-    let tt_capture = tt_move.filter(|m| t.board.is_tactical(*m));
+    let mut tt_move = cached.and_then(|e| e.mov);
+    let mut tt_capture = tt_move.filter(|m| t.board.is_tactical(*m));
+
+    // Internal Iterative Deepening (IID):
+    // when no TT move is available and depth permits, do a quick search at depth-1
+    // to populate the TT with a best move before the main search.
+    if !NT::ROOT && !NT::PV && excluded.is_none() && tt_move.is_none() && depth >= 4 && !in_check {
+        let iid_depth = depth - 1;
+        alpha_beta::<OffPV>(t, iid_depth, alpha, beta, cut_node);
+        // Re-probe the cache; the IID search may have populated it.
+        if let Some(hit) = t.cache.probe(key, height, clock) {
+            let illegal = hit
+                .mov
+                .is_some_and(|m| !t.board.is_pseudo_legal(m) || !t.board.is_legal(m));
+            if !illegal {
+                // Update tt_move and tt_capture from the IID result.
+                // Note: we don't early-return here even if the IID hit would cut off,
+                // because the IID search was at reduced depth.
+            }
+        }
+        // Refresh tt_move/tt_capture from cache after IID.
+        tt_move = t.cache.probe(key, height, clock).and_then(|e| e.mov);
+        tt_capture = tt_move.filter(|m| t.board.is_tactical(*m));
+    }
 
     // whole-node techniques:
     if !NT::ROOT && !NT::PV && !in_check && excluded.is_none() {
