@@ -31,3 +31,4 @@ stacks.folded
 Cargo.lock
 *.book
 *.log
+__pycache__/
