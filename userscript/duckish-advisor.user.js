@@ -39,14 +39,13 @@ function extractMoves() {
   plyElements.forEach((ply) => {
     let container = ply.querySelector(".node-highlight-content") || ply;
     const clone = container.cloneNode(true);
-    const figurineEl = clone.querySelector("[data-figurine]");
-    let figurinePrefix = "";
-    if (figurineEl) {
-      figurinePrefix = figurineEl.getAttribute("data-figurine") || "";
-      figurineEl.remove();
-    }
-    const rest = clone.textContent.trim();
-    const san = figurinePrefix + rest;
+    const figurineEls = clone.querySelectorAll("[data-figurine]");
+    figurineEls.forEach((el) => {
+      const fig = el.getAttribute("data-figurine") || "";
+      const textNode = document.createTextNode(fig);
+      el.replaceWith(textNode);
+    });
+    const san = clone.textContent.trim();
     if (san) sanList.push(san);
   });
   return sanList;
@@ -256,6 +255,10 @@ function renderError(msg) {
 // -----------------------------------------------------------------------------
 function analyze() {
   if (state.running) return;
+  if (state.svg) {
+    state.svg.remove();
+    state.svg = null;
+  }
   state.running = true;
   setStatus("thinking...", "#fbbf24");
   const payload = {
@@ -279,21 +282,25 @@ function analyze() {
           render();
           drawBestArrow(parsed);
         } else {
+          if (state.svg) { state.svg.remove(); state.svg = null; }
           setStatus("error", "#ef4444");
           renderError(parsed.error || "Unknown error");
         }
       } catch (e) {
+        if (state.svg) { state.svg.remove(); state.svg = null; }
         setStatus("error", "#ef4444");
         renderError("Invalid response: " + e.message);
       }
     },
     onerror: () => {
       state.running = false;
+      if (state.svg) { state.svg.remove(); state.svg = null; }
       setStatus("bridge offline", "#ef4444");
       renderError("Bridge offline \u2014 start bridge/server.py");
     },
     ontimeout: () => {
       state.running = false;
+      if (state.svg) { state.svg.remove(); state.svg = null; }
       setStatus("bridge offline", "#ef4444");
       renderError("Bridge timeout \u2014 start bridge/server.py");
     }
