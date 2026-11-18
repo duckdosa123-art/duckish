@@ -4,7 +4,8 @@
 // @version      1.0.0
 // @description  Offline Duckish engine analysis overlay for Chess.com (self-study / post-game review / bot practice).
 // @author       Duck
-// @match        *://*/*
+// @match        https://chess.com/*
+// @match        https://*.chess.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // @run-at       document-idle
