@@ -1,3 +1,16 @@
+> **Duckish Fork Notice**
+>
+> Duckish 1.0 is a modified fork of [cosmobobak/viridithas](https://github.com/cosmobobak/viridithas), distributed under the **GNU Affero General Public License v3.0** (`LICENSE`). Upstream copyright and attribution are retained, including the bundled Pyrrhic/Fathom tablebase code described in `THIRD-PARTY-NOTICES.md`. Duckish is not affiliated with or endorsed by the Viridithas author.
+>
+> Changes from upstream Viridithas:
+> - Native MultiPV (1-10) in the root search: each converged principal variation has its root move excluded and the search re-runs for the next rank; PVs are ranked by score, so `multipv 1` always equals `bestmove`. MultiPV greater than 1 runs single-threaded for deterministic candidate ordering.
+> - Transposition-table hash default raised from 16 MB to 256 MB, with a new `MultiPV` UCI option (default 1, range 1-10). Binary renamed to `duckish`.
+> - `scripts/uci_smoke.ps1`: automated UCI regression harness (handshake, MultiPV ordering, `bestmove`/`multipv 1` agreement, clean output, no panic).
+> - `bridge/`: local Python UCI HTTP bridge exposing `POST /analyze` and `GET /health` on `127.0.0.1:5000`, converting SAN move lists to UCI and returning ranked candidates with both UCI and SAN principal variations.
+> - `userscript/`: Tampermonkey Chess.com advisor overlay for offline self-study, post-game review, and bot practice, drawing the best move on the board. It talks only to the local bridge; no external service is contacted.
+>
+> Engine strength and search behaviour are unchanged from upstream when `MultiPV = 1`.
+
 <div align="center">
 
   ![Logo](assets/images/logo2.png)
