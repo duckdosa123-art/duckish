@@ -6,7 +6,7 @@ Plain functions, print PASS/FAIL, like test_promotion.py.
 
 import os
 import tempfile
-from experience import ExperienceStore, BLUNDER_THRESHOLD_CP, LEARNING_BONUS_CP
+from experience import ExperienceStore, BLUNDER_THRESHOLD_CP, LEARNING_BONUS_CP, mate_score_to_cp, MATE_MAX_CP
 
 
 def test_store_roundtrip_position():
@@ -231,9 +231,70 @@ def test_constants():
     print("PASS: test_constants")
 
 
+def test_mate_score_to_cp():
+    """Test mate_score_to_cp conversion function."""
+    # mate in 3 -> 100000 - 3*1000 = 97000
+    if mate_score_to_cp(3) != 97000.0:
+        print(f"FAIL: mate_score_to_cp(3) should be 97000.0, got {mate_score_to_cp(3)}")
+        return
+    # mate in -3 -> -100000 + 3*1000 = -97000
+    if mate_score_to_cp(-3) != -97000.0:
+        print(f"FAIL: mate_score_to_cp(-3) should be -97000.0, got {mate_score_to_cp(-3)}")
+        return
+    # None -> 0.0
+    if mate_score_to_cp(None) != 0.0:
+        print(f"FAIL: mate_score_to_cp(None) should be 0.0, got {mate_score_to_cp(None)}")
+        return
+    print("PASS: test_mate_score_to_cp")
+
+
+def test_apply_adjustments_mate_candidate():
+    """Test apply_adjustments handles mate scores correctly."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        store = ExperienceStore(db_path)
+        store.ensure_schema()
+        
+        # Candidates: one with mate score, one with cp score
+        cands = [
+            {"uci": "a2a4", "score_cp": None, "score_mate": 3, "rank": 1},
+            {"uci": "h7h6", "score_cp": 25, "score_mate": None, "rank": 2},
+        ]
+        
+        adjusted = store.apply_adjustments("8/8/8/8/8/8/8/K6k w - - 0 1", cands)
+        
+        # a2a4 (mate in 3) should be rank 1 with adjusted_score_cp = 97000.0
+        if adjusted[0]["uci"] != "a2a4":
+            print(f"FAIL: rank 1 should be a2a4, got {adjusted[0]['uci']}")
+            return
+        if abs(adjusted[0]["adjusted_score_cp"] - 97000.0) > 0.001:
+            print(f"FAIL: a2a4 adjusted_score_cp should be 97000.0, got {adjusted[0]['adjusted_score_cp']}")
+            return
+        if adjusted[0]["rank"] != 1:
+            print(f"FAIL: a2a4 rank should be 1, got {adjusted[0]['rank']}")
+            return
+        
+        # h7h6 (cp 25) should be rank 2 with adjusted_score_cp = 25.0
+        if adjusted[1]["adjusted_score_cp"] != 25.0:
+            print(f"FAIL: h7h6 adjusted_score_cp should be 25.0, got {adjusted[1]['adjusted_score_cp']}")
+            return
+        
+        print("PASS: test_apply_adjustments_mate_candidate")
+    except Exception as e:
+        print(f"FAIL: test_apply_adjustments_mate_candidate -> {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.unlink(db_path)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     test_constants()
+    test_mate_score_to_cp()
     test_store_roundtrip_position()
     test_store_roundtrip_move()
     test_apply_adjustments_re_ranks()
+    test_apply_adjustments_mate_candidate()
     test_get_stats()

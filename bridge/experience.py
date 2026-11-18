@@ -13,7 +13,22 @@ import os
 # Constants
 BLUNDER_THRESHOLD_CP = 80.0
 LEARNING_BONUS_CP = 15.0
+MATE_MAX_CP = 100000.0
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experience.db")
+
+
+def mate_score_to_cp(mate: Optional[int]) -> float:
+    """Convert mate-in-N to a centipawn score for ranking.
+    Positive mate = winning, negative mate = losing.
+    Uses MATE_MAX_CP - abs(mate)*1000 to prefer faster mates.
+    """
+    if mate is None:
+        return 0.0
+    if mate > 0:
+        return MATE_MAX_CP - abs(mate) * 1000.0
+    if mate < 0:
+        return -MATE_MAX_CP + abs(mate) * 1000.0
+    return 0.0
 
 
 class ExperienceStore:
@@ -158,6 +173,7 @@ class ExperienceStore:
         """
         Apply learned adjustments to candidate moves.
         Returns re-ranked candidates with 'learned' flag and adjusted scores.
+        Handles both score_cp and score_mate (converted via mate_score_to_cp).
         """
         with self._lock:
             cur = self._get_cursor()
@@ -169,22 +185,27 @@ class ExperienceStore:
             for c in candidates:
                 uci = c.get("uci", "")
                 penalty, bonus = exp_map.get(uci, (0.0, 0.0))
+                
+                # Resolve effective score: prefer score_cp, else convert score_mate, else 0.0
                 score_cp = c.get("score_cp")
-                adjusted_score = None
-                learned = False
                 if score_cp is not None:
-                    adjusted_score = score_cp + bonus - penalty
-                    learned = penalty != 0.0 or bonus != 0.0
+                    effective_score = float(score_cp)
+                else:
+                    score_mate = c.get("score_mate")
+                    effective_score = mate_score_to_cp(score_mate) if score_mate is not None else 0.0
+                
+                adjusted_score = effective_score + bonus - penalty
+                learned = penalty != 0.0 or bonus != 0.0
+                
                 new_c = dict(c)
                 new_c["learned"] = learned
                 new_c["penalty_cp"] = penalty
                 new_c["bonus_cp"] = bonus
-                if adjusted_score is not None:
-                    new_c["adjusted_score_cp"] = adjusted_score
+                new_c["adjusted_score_cp"] = adjusted_score
                 adjusted.append(new_c)
 
-            # Re-rank by adjusted_score_cp desc (fallback to original score_cp)
-            adjusted.sort(key=lambda x: x.get("adjusted_score_cp", x.get("score_cp", -999999)), reverse=True)
+            # Re-rank by adjusted_score_cp desc
+            adjusted.sort(key=lambda x: x.get("adjusted_score_cp", -999999), reverse=True)
             # Update rank
             for i, c in enumerate(adjusted):
                 c["rank"] = i + 1

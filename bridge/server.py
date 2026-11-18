@@ -21,7 +21,7 @@ import chess
 BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BRIDGE_DIR)
 
-from experience import ExperienceStore, BLUNDER_THRESHOLD_CP, LEARNING_BONUS_CP, DEFAULT_DB_PATH
+from experience import ExperienceStore, BLUNDER_THRESHOLD_CP, LEARNING_BONUS_CP, DEFAULT_DB_PATH, mate_score_to_cp
 
 # ---- Configuration ----------------------------------------------------------
 
@@ -41,7 +41,7 @@ if not BOOK_PATH:
 class Engine:
     """Manages the UCI engine subprocess with thread-safe I/O."""
 
-    def __init__(self, exe_path: str, default_multipv: int):
+    def __init__(self, exe_path: str, default_multipv: int, threads: Optional[int] = None):
         self.exe_path = exe_path
         self.default_multipv = default_multipv
         self.proc: Optional[subprocess.Popen] = None
@@ -53,7 +53,7 @@ class Engine:
         self._book_loaded = False
         self._book_hits = 0
         self._hash_mb = 256
-        self._threads = 1
+        self._threads = threads if threads is not None else max(1, (os.cpu_count() or 2) // 2)
         self._last_error: Optional[str] = None
         self._start_engine()
 
@@ -90,6 +90,7 @@ class Engine:
         self._read_until(lambda line: line.strip() == "readyok", HANDSHAKE_TIMEOUT)
         self._send(f"setoption name Hash value {self._hash_mb}")
         self._send(f"setoption name MultiPV value {self.default_multipv}")
+        self._send(f"setoption name Threads value {self._threads}")
         if BOOK_PATH and os.path.isfile(BOOK_PATH):
             self._send(f"setoption name BookPath value {BOOK_PATH}")
             self._book_loaded = True
@@ -328,8 +329,9 @@ class Engine:
                 result["score_cp"] = int(parts[score_idx + 2])
                 result["score_mate"] = None
             elif score_type == "mate":
-                result["score_mate"] = int(parts[score_idx + 2])
-                result["score_cp"] = None
+                mate_value = int(parts[score_idx + 2])
+                result["score_mate"] = mate_value
+                result["score_cp"] = mate_score_to_cp(mate_value)
         except (ValueError, IndexError):
             result["score_cp"] = None
             result["score_mate"] = None
@@ -473,6 +475,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _dashboard_html(self, h: Dict[str, Any]) -> str:
         status = "ALIVE" if h.get("alive") else "DEAD"
         color = "#22c55e" if h.get("alive") else "#ef4444"
+        
+        # Format recent lessons readably
+        recent = h.get("experience_recent_lessons") or []
+        if recent:
+            lesson_strs = []
+            for lesson in recent:
+                move_uci = lesson.get("move_uci", "?")
+                penalty = lesson.get("penalty_cp", 0.0)
+                bonus = lesson.get("bonus_cp", 0.0)
+                visits = lesson.get("visits", 0)
+                lesson_strs.append(f"{move_uci} | pen {penalty:.0f} | bon {bonus:.0f} | visits {visits}")
+            recent_formatted = "; ".join(lesson_strs)
+        else:
+            recent_formatted = "none"
+        
         return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Duckish Bridge Status</title>
 <style>
@@ -504,7 +521,7 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
 <div class="row"><span class="label">Games Lost</span><span class="value">{h.get('experience_games_lost',0)}</span></div>
 <div class="row"><span class="label">Games Drawn</span><span class="value">{h.get('experience_games_drawn',0)}</span></div>
 <div class="row"><span class="label">Mistakes Corrected</span><span class="value">{h.get('experience_mistakes',0)}</span></div>
-<div class="row"><span class="label">Recent Lessons</span><span class="value">{str(h.get('experience_recent_lessons') or '[]')}</span></div>
+<div class="row"><span class="label">Recent Lessons</span><span class="value">{recent_formatted}</span></div>
 </div></body></html>"""
 
     def do_POST(self) -> None:
@@ -745,8 +762,8 @@ h2{{margin:1.5rem 0 0.5rem;font-size:1.1rem;color:#94a3b8;border-top:1px solid #
 
 # ---- Main -------------------------------------------------------------------
 
-def run_server(port: int, default_movetime: int) -> None:
-    engine = Engine(ENGINE_PATH, DEFAULT_MULTIPV)
+def run_server(port: int, default_movetime: int, threads: Optional[int] = None) -> None:
+    engine = Engine(ENGINE_PATH, DEFAULT_MULTIPV, threads=threads)
     experience = ExperienceStore(DEFAULT_DB_PATH)
     handler_class = type(
         "Handler",
@@ -773,5 +790,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Duckish Bridge Server")
     parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
     parser.add_argument("--movetime", type=int, default=400, help="Default movetime in ms (default: 400)")
+    parser.add_argument("--threads", type=int, default=None, help="Engine threads (default: auto-detect half of CPU cores)")
     args = parser.parse_args()
-    run_server(args.port, args.movetime)
+    threads = args.threads if args.threads is not None else (int(os.environ.get("DUCKISH_THREADS") or 0) or None)
+    run_server(args.port, args.movetime, threads)
