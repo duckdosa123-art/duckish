@@ -112,8 +112,8 @@ def main():
         configure_engine(engine_b, args.hash_b, args.threads_b)
 
         if args.book:
-            if "BookPath" in engine_b.options:
-                engine_b.configure({"BookPath": args.book})
+            if "BookPath" in engine_a.options:
+                engine_a.configure({"BookPath": args.book})
                 print(f"BOOK {args.book}")
 
         print(f"A={args.engine_a}  threads={args.threads_a}  hash={args.hash_a}MB")

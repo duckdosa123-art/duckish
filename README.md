@@ -91,6 +91,13 @@ No, and it is worth being blunt about it:
 
 The one thing we could not find in a published engine is the deliberate rule **force `Threads = 1` whenever `MultiPV > 1`**. Stockfish, Ethereal and Berserk all run the PV loop inside every worker thread. That is an advisor-motivated policy, not a search-theory contribution, and it is why the bridge defaults to 400 ms with a Fast/Analysis toggle.
 
+### Performance Book (Performance.bin)
+
+- The local Polyglot book is at `E:\dev\duckish\Performance.bin`; `*.bin` is gitignored, so it stays local-only.
+- The bridge auto-wires it: with `DUCKISH_BOOK_PATH` unset it defaults the engine's `BookPath` option to `<repo root>/Performance.bin` and sends `setoption name BookPath value <abs path>` when the file exists.
+- The engine probes the book at the root for time-based `go` commands (wtime/btime/movetime), so the advisor gets instant opening moves; `go depth` bypasses the book and searches directly.
+- Live E2E on this machine: startpos -> `bestmove e2e4 ponder c7c5`; after `1.e4 e5` -> `bestmove g1f3 ponder g8f6`. Both instant book hits, clean exit.
+
 ## Building Viridithas
 
 If you just want one of the official releases of Viridithas, check out the **Releases** tab on the right.
