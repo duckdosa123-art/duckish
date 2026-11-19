@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import http.server
 import random
+import socket
 from typing import Optional, List, Dict, Any, Tuple
 from http.client import HTTPResponse
 import chess
@@ -383,8 +384,8 @@ class LichessClient:
         url = f"{LICHESS_API}{endpoint}"
         body = json.dumps(data).encode("utf-8") if data else None
         req = urllib.request.Request(url, data=body, method=method, headers=self.headers)
-        # Use 10s socket timeout for bot-list fetch; 30s for others
-        timeout = 10 if endpoint == "/api/bot/online" else 30
+        # Use 3.0s socket timeout for bot-list fetch; 30s for others
+        timeout = 3.0 if endpoint == "/api/bot/online" else 30
         return urllib.request.urlopen(req, timeout=timeout)
 
     def upgrade_account(self) -> Dict[str, Any]:
@@ -432,8 +433,8 @@ class LichessClient:
         resp = self._request("POST", f"/challenge/{username}", data)
         return json.loads(resp.read().decode("utf-8"))
 
-    def get_online_bots(self) -> List[Dict[str, Any]]:
-        """GET /api/bot/online - fetch list of online bots via NDJSON stream."""
+    def get_online_bots(self, own_username: Optional[str] = None) -> List[Dict[str, Any]]:
+        """GET /api/bot/online - fetch list of online bots via NDJSON stream with 3s timeout."""
         resp = self._request("GET", "/api/bot/online")
         bots: List[Dict[str, Any]] = []
         try:
@@ -443,12 +444,24 @@ class LichessClient:
                     continue
                 try:
                     bot = json.loads(line)
-                    if isinstance(bot, dict) and ("username" in bot or "id" in bot):
-                        bots.append(bot)
-                        if len(bots) >= 50:
-                            break
+                    if not isinstance(bot, dict) or ("username" not in bot and "id" not in bot):
+                        continue
+                    name = bot.get("username") or bot.get("id")
+                    if own_username and name == own_username:
+                        continue
+                    perfs = bot.get("perfs", {})
+                    blitz = perfs.get("blitz", {})
+                    if blitz.get("games", 0) == 0:
+                        continue
+                    if bot.get("tosViolation") or bot.get("disabled"):
+                        continue
+                    bots.append(bot)
+                    if len(bots) >= 1:
+                        break  # Stop as soon as we have at least 1 valid bot
                 except json.JSONDecodeError:
                     continue
+        except (socket.timeout, TimeoutError):
+            pass  # Timeout is expected; return whatever we collected
         finally:
             try:
                 resp.close()
@@ -719,6 +732,11 @@ h1{font-size:1.25rem;font-weight:600;letter-spacing:-0.02em}
 .status-online{background:rgba(63,185,80,.15);color:var(--ok);border:1px solid var(--ok)}
 .status-offline{background:rgba(248,81,73,.15);color:var(--err);border:1px solid var(--err)}
 .status-auto{background:rgba(210,153,34,.15);color:var(--warn);border:1px solid var(--warn)}
+.action-box{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin:16px 24px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.action-phase{font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;padding:4px 10px;border-radius:999px;background:rgba(88,166,255,.15);color:var(--accent);border:1px solid var(--accent);min-width:110px;text-align:center}
+.action-detail{flex:1;font-size:0.9rem;color:var(--fg);min-width:280px}
+.watch-btn{display:inline-block;padding:8px 16px;background:var(--accent);color:#0d1117;border-radius:8px;font-weight:600;text-decoration:none;transition:opacity .2s}
+.watch-btn:hover{opacity:.85}
 main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;max-width:1400px;margin:0 auto;width:100%}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;display:flex;flex-direction:column}
 .card h2{font-size:0.875rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px}
@@ -759,6 +777,21 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 .refresh-indicator{height:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:0 0 12px 12px;transform-origin:left;transform:scaleX(0);animation:pulse 1.5s linear infinite}
 @keyframes pulse{0%{transform:scaleX(0)}100%{transform:scaleX(1)}}
 .rating-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;background:var(--panel2);border:1px solid var(--border)}
+.console-card{grid-column:1/-1}
+.console-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.console-title{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)}
+.console-clear{padding:4px 10px;font-size:0.7rem;border:1px solid var(--border);background:var(--panel);color:var(--fg);border-radius:4px;cursor:pointer}
+.console-clear:hover{border-color:var(--accent)}
+.console-output{flex:1;overflow-y:auto;font-family:monospace;font-size:0.7rem;line-height:1.5;background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;max-height:350px;min-height:200px}
+.console-line{padding:2px 0;display:flex;gap:8px;white-space:pre-wrap;word-break:break-word}
+.console-time{color:var(--muted);white-space:nowrap;min-width:70px}
+.console-msg{color:var(--fg);flex:1}
+.console-phase-IDLE{color:var(--muted)}
+.console-phase-FETCHING{color:var(--accent)}
+.console-phase-CHALLENGING{color:var(--warn)}
+.console-phase-WAITING_REPLY{color:var(--accent2)}
+.console-phase-DECLINED{color:var(--err)}
+.console-phase-IN_GAME{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -766,6 +799,11 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <h1>🦆 Duckish Bot Dashboard</h1>
 <span id="statusBadge" class="status-badge status-offline">Offline</span>
 </header>
+<div class="action-box" id="actionBox">
+<span class="action-phase" id="actionPhase">IDLE</span>
+<span class="action-detail" id="actionDetail">Idle \u2014 click Start Auto-Match or challenge a bot</span>
+<a class="watch-btn" id="watchBtn" href="#" target="_blank" style="display:none;">Watch Live</a>
+</div>
 <main>
 <div class="card">
 <h2>Bot Status</h2>
@@ -801,6 +839,14 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <button id="btnManual" class="btn">Challenge</button>
 </div>
 <div class="log-container" id="challengeLog"></div>
+</div>
+<div class="card console-card">
+<h2>Live Activity Console</h2>
+<div class="console-toolbar">
+<span class="console-title">Real-time event stream (last 50)</span>
+<button class="console-clear" id="consoleClear">Clear</button>
+</div>
+<div class="console-output" id="consoleOutput"></div>
 </div>
 </main>
 <div class="refresh-indicator" id="refreshBar"></div>
@@ -841,11 +887,32 @@ ml.innerHTML=g.moves.map((m,i)=>`<div>${i+1}. ${m.san} <span class="eval">(${m.e
 }else{
 $('#activeGame').innerHTML='<div class="no-game">No active game</div>';
 }
+// State machine display
+const s=d.state;
+if(s){
+$('#actionPhase').textContent=s.phase;
+$('#actionPhase').className='action-phase console-phase-'+s.phase;
+$('#actionDetail').textContent=s.detail;
+const watchBtn=$('#watchBtn');
+if(s.phase==='IN_GAME' && s.active_game_url){
+watchBtn.href=s.active_game_url;
+watchBtn.style.display='inline-block';
+}else{
+watchBtn.style.display='none';
+}
+// Console logs
+const consoleOut=$('#consoleOutput');
+if(s.logs && s.logs.length){
+consoleOut.innerHTML=s.logs.map(e=>`<div class="console-line"><span class="console-time">${new Date(e.time*1000).toLocaleTimeString()}</span><span class="console-msg console-phase-${s.phase}">${e.msg}</span></div>`).join('');
+consoleOut.scrollTop=consoleOut.scrollHeight;
+}
+}
 }
 $('#btnStart').onclick=async()=>{await fetch('/api/auto-match/start',{method:'POST'});log('Auto-match started','log-success');fetchStatus();};
 $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST'});log('Auto-match stopped','log-warn');fetchStatus();};
 $('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
-fetchStatus();setInterval(fetchStatus,1500);
+$('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
+fetchStatus();setInterval(fetchStatus,1000);
 </script>
 </body>
 </html>
@@ -878,6 +945,57 @@ class LichessBot:
         self._perf_book_loaded = os.path.isfile(BOOK_PATH)
         self._exp_book_loaded = os.path.isfile(DEFAULT_DB_PATH)
 
+        # ---- State machine for dashboard ----
+        self._state_lock = threading.Lock()
+        self._state = {
+            "phase": "IDLE",
+            "detail": "Idle \u2014 click Start Auto-Match or challenge a bot",
+            "target_bot": None,
+            "challenge_id": None,
+            "active_game_url": None,
+            "logs": [],
+        }
+
+    def _set_phase(self, phase: str, detail: str, **extra) -> None:
+        with self._state_lock:
+            self._state["phase"] = phase
+            self._state["detail"] = detail
+            for k, v in extra.items():
+                if k in self._state:
+                    self._state[k] = v
+            self._log_event(detail)
+
+    def _log_event(self, msg: str) -> None:
+        entry = {"time": time.time(), "msg": msg}
+        with self._state_lock:
+            self._state["logs"].append(entry)
+            if len(self._state["logs"]) > 50:
+                self._state["logs"] = self._state["logs"][-50:]
+        print(msg, flush=True)
+
+    def get_dashboard_status(self) -> Dict[str, Any]:
+        with self._state_lock:
+            state_copy = dict(self._state)
+            state_copy["logs"] = list(self._state["logs"])
+        active_game = None
+        if self._current_game_info:
+            active_game = dict(self._current_game_info)
+        return {
+            "online": True,
+            "auto_match": self._auto_match_active,
+            "username": self._username,
+            "blitz_rating": self._blitz_rating,
+            "rapid_rating": self._rapid_rating,
+            "session_wins": self._session_wins,
+            "session_losses": self._session_losses,
+            "session_draws": self._session_draws,
+            "perf_book_loaded": self._perf_book_loaded,
+            "exp_book_loaded": self._exp_book_loaded,
+            "active_game": active_game,
+            "challenge_log": self._challenge_log[-20:],
+            "state": state_copy,
+        }
+
     def upgrade_account(self) -> None:
         print("Upgrading account to BOT...", flush=True)
         print("WARNING: This permanently converts a 0-game account into a BOT account.", flush=True)
@@ -890,18 +1008,21 @@ class LichessBot:
             print(f"Upgrade error: {e}", flush=True)
 
     def challenge_user(self, username: str, rated: bool = True) -> None:
-        print(f"Challenging {username} to 3+2 {'rated' if rated else 'casual'}...", flush=True)
-        self._log_challenge(f"Challenging {username} ({'rated' if rated else 'casual'})")
+        self._set_phase("CHALLENGING", f"Challenging {username} (3+2 {'Rated' if rated else 'Casual'} Standard)...", target_bot=username)
         try:
             result = self.client.challenge_user(username, clock_limit=180, clock_increment=2, rated=rated)
-            print(f"Challenge sent: {json.dumps(result, indent=2)}", flush=True)
-            self._log_challenge(f"Challenge sent to {username}", success=True)
+            challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
+            self._set_phase("WAITING_REPLY", f"Waiting for {username} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=username)
+            self._log_event(f"Challenge sent to {username}")
+            self._log_challenge(f"Challenge sent to {username} ({'rated' if rated else 'casual'})", success=True)
         except urllib.error.HTTPError as e:
             err = e.read().decode('utf-8')
-            print(f"Challenge failed: {e.code} - {err}", flush=True)
+            self._set_phase("DECLINED", f"{username} declined ({err})", target_bot=username)
+            self._log_event(f"Challenge to {username} failed: {err}")
             self._log_challenge(f"Failed: {err}", success=False)
         except Exception as e:
-            print(f"Challenge error: {e}", flush=True)
+            self._set_phase("DECLINED", f"{username} error ({e})", target_bot=username)
+            self._log_event(f"Challenge to {username} error: {e}")
             self._log_challenge(f"Error: {e}", success=False)
 
     def _log_challenge(self, msg: str, success: Optional[bool] = None) -> None:
@@ -915,9 +1036,10 @@ class LichessBot:
     def run(self) -> None:
         self.dashboard.start()
         self._fetch_account_info()
-        print("Starting Lichess Bot event stream...", flush=True)
-        print(f"Engine: {self.engine.health()}", flush=True)
-        print(f"Dashboard: http://{DASHBOARD_HOST}:{DASHBOARD_PORT}", flush=True)
+        self._set_phase("IDLE", "Idle \u2014 click Start Auto-Match or challenge a bot")
+        self._log_event("Starting Lichess Bot event stream...")
+        self._log_event(f"Engine: {self.engine.health()}")
+        self._log_event(f"Dashboard: http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
         
         while self._running:
             try:
@@ -932,12 +1054,12 @@ class LichessBot:
                     self._handle_event(event)
             except urllib.error.HTTPError as e:
                 if e.code == 401:
-                    print("Authentication failed: invalid token", flush=True)
+                    self._log_event("Authentication failed: invalid token")
                     break
-                print(f"HTTP error: {e.code}, reconnecting in 5s...", flush=True)
+                self._log_event(f"HTTP error: {e.code}, reconnecting in 5s...")
                 time.sleep(5)
             except Exception as e:
-                print(f"Stream error: {e}, reconnecting in 5s...", flush=True)
+                self._log_event(f"Stream error: {e}, reconnecting in 5s...")
                 time.sleep(5)
 
     def _fetch_account_info(self) -> None:
@@ -968,24 +1090,24 @@ class LichessBot:
         rated = challenge.get("rated", False)
         challenger = challenge.get("challenger", {}).get("name", "unknown")
 
-        print(f"Challenge from {challenger}: {variant} {speed} rated={rated} tc={time_control}", flush=True)
+        self._log_event(f"Challenge from {challenger}: {variant} {speed} rated={rated} tc={time_control}")
 
         # Only accept standard variant real-time games
         if variant not in SUPPORTED_VARIANTS:
-            print(f"  -> Declining: unsupported variant {variant}", flush=True)
+            self._log_event(f"  -> Declining: unsupported variant {variant}")
             self.client.decline_challenge(challenge_id, "variant")
             return
         if speed not in SUPPORTED_SPEEDS:
-            print(f"  -> Declining: unsupported speed {speed} (correspondence not supported)", flush=True)
+            self._log_event(f"  -> Declining: unsupported speed {speed} (correspondence not supported)")
             self.client.decline_challenge(challenge_id, "timecontrol")
             return
 
         # Accept!
-        print(f"  -> Accepting challenge", flush=True)
+        self._log_event(f"  -> Accepting challenge from {challenger}")
         try:
             self.client.accept_challenge(challenge_id)
         except Exception as e:
-            print(f"  -> Accept failed: {e}", flush=True)
+            self._log_event(f"  -> Accept failed: {e}")
 
     def _handle_game_start(self, game: Dict[str, Any]) -> None:
         game_id = game.get("id")
@@ -1001,7 +1123,7 @@ class LichessBot:
         opponent = game.get("opponent", {}).get("name", "unknown")
         opponent_rating = game.get("opponent", {}).get("rating")
 
-        print(f"Game started: {game_id} as {color} vs {opponent} ({variant} rated={rated})", flush=True)
+        self._log_event(f"Game started: {game_id} as {color} vs {opponent} ({variant} rated={rated})")
 
         handler = GameHandler(
             self.client,
@@ -1032,6 +1154,7 @@ class LichessBot:
             "last_eval": None,
             "game_url": f"/{game_id}",
         }
+        self._set_phase("IN_GAME", f"Playing vs {opponent} ({opponent_rating or '?'}) \u2014 Move 0 | Eval ?", active_game_url=f"https://lichess.org/{game_id}")
         # Patch handler to update our game info
         original_handle_event = handler._handle_event
         def wrapped_handle_event(event):
@@ -1052,6 +1175,9 @@ class LichessBot:
                 self._current_game_info["moves"] = [
                     {"san": san, "eval": "?"} for san in move_list
                 ]
+                opp_name = self._current_game_info["opponent_name"]
+                opp_rating = self._current_game_info["opponent_rating"]
+                self._set_phase("IN_GAME", f"Playing vs {opp_name} ({opp_rating or '?'}) \u2014 Move {len(move_list)} | Eval ?", active_game_url=f"https://lichess.org/{handler.game_id}")
         elif typ == "gameFull":
             moves_str = event.get("state", {}).get("moves", "")
             if moves_str:
@@ -1060,6 +1186,9 @@ class LichessBot:
                 self._current_game_info["moves"] = [
                     {"san": san, "eval": "?"} for san in move_list
                 ]
+                opp_name = self._current_game_info["opponent_name"]
+                opp_rating = self._current_game_info["opponent_rating"]
+                self._set_phase("IN_GAME", f"Playing vs {opp_name} ({opp_rating or '?'}) \u2014 Move {len(move_list)} | Eval ?", active_game_url=f"https://lichess.org/{handler.game_id}")
 
     def _handle_game_finish(self, game: Dict[str, Any]) -> None:
         game_id = game.get("id")
@@ -1083,22 +1212,28 @@ class LichessBot:
             else:
                 self._session_draws += 1
             
-            print(f"[Game {game_id}] Finished: {result} ({status})", flush=True)
-            self._log_challenge(f"Game vs {self._current_game_info['opponent_name'] if self._current_game_info else 'unknown'}: {result} ({status})", success=(result=="win"))
+            opponent_name = self._current_game_info['opponent_name'] if self._current_game_info else 'unknown'
+            self._log_event(f"Game vs {opponent_name} finished: {result} ({status})")
+            self._log_challenge(f"Game vs {opponent_name}: {result} ({status})", success=(result=="win"))
             
             del self.games[game_id]
             if self._current_game_id == game_id:
                 self._current_game_id = None
                 self._current_game_info = None
             
-            # If auto-match is active, schedule next challenge
             if self._auto_match_active:
+                self._set_phase("IDLE", "Game finished \u2014 searching next opponent...")
                 threading.Timer(5.0, self._auto_match_next).start()
+            else:
+                self._set_phase("IDLE", "Idle \u2014 click Start Auto-Match or challenge a bot")
 
     def get_dashboard_status(self) -> Dict[str, Any]:
         active_game = None
         if self._current_game_info:
             active_game = dict(self._current_game_info)
+        with self._state_lock:
+            state_copy = dict(self._state)
+            state_copy["logs"] = list(self._state["logs"])
         return {
             "online": True,
             "auto_match": self._auto_match_active,
@@ -1112,6 +1247,7 @@ class LichessBot:
             "exp_book_loaded": self._exp_book_loaded,
             "active_game": active_game,
             "challenge_log": self._challenge_log[-20:],  # Last 20 entries
+            "state": state_copy,
         }
 
     def start_auto_match(self) -> None:
@@ -1120,12 +1256,12 @@ class LichessBot:
         self._auto_match_active = True
         self._auto_match_thread = threading.Thread(target=self._auto_match_loop, daemon=True)
         self._auto_match_thread.start()
-        print("Auto-match started", flush=True)
+        self._set_phase("FETCHING", "Auto-match started \u2014 fetching online bots...")
         self._log_challenge("Auto-match started", success=True)
 
     def stop_auto_match(self) -> None:
         self._auto_match_active = False
-        print("Auto-match stopped", flush=True)
+        self._set_phase("IDLE", "Auto-match stopped \u2014 click Start Auto-Match or challenge a bot")
         self._log_challenge("Auto-match stopped", success=False)
 
     def _auto_match_loop(self) -> None:
@@ -1139,12 +1275,10 @@ class LichessBot:
             return
         
         try:
-            print("Fetching online bots...", flush=True)
-            self._log_challenge("Fetching online bots...")
-            bots = self.client.get_online_bots()
-            print(f"Found {len(bots)} online bots", flush=True)
-            self._log_challenge(f"Found {len(bots)} online bots")
-            # Filter: skip self, skip bots with 0 blitz games
+            self._set_phase("FETCHING", "Fetching online bots from Lichess...")
+            bots = self.client.get_online_bots(own_username=self._username)
+            self._log_event(f"Fetched {len(bots)} candidate bots")
+            # Filter: skip self (already done in client), skip bots with 0 blitz games, tosViolation, disabled
             candidates = []
             for bot in bots:
                 name = bot.get("username") or bot.get("id")
@@ -1154,11 +1288,12 @@ class LichessBot:
                 blitz_games = perfs.get("blitz", {}).get("games", 0)
                 if blitz_games == 0:
                     continue
+                if bot.get("tosViolation") or bot.get("disabled"):
+                    continue
                 candidates.append(name)
             
             if not candidates:
-                print("No suitable bots found, retrying in 30s", flush=True)
-                self._log_challenge("No suitable bots found, retrying in 30s", success=False)
+                self._set_phase("IDLE", "No suitable bots found, retrying in 30s")
                 threading.Timer(30.0, self._auto_match_next).start()
                 return
             
@@ -1167,27 +1302,39 @@ class LichessBot:
                 if not self._auto_match_active:
                     return
                 if self._current_game_id:
-                    print(f"Match started: https://lichess.org/{self._current_game_id}", flush=True)
-                    self._log_challenge(f"Match started: https://lichess.org/{self._current_game_id}", success=True)
+                    self._set_phase("IN_GAME", f"Playing vs {self._current_game_info['opponent_name'] if self._current_game_info else opponent} ({self._current_game_info['opponent_rating'] if self._current_game_info else '?'}) \u2014 Move 0 | Eval ?", active_game_url=f"https://lichess.org/{self._current_game_id}")
                     return  # Game started
-                print(f"Sending 3+2 challenge to {opponent}...", flush=True)
-                self._log_challenge(f"Sending 3+2 challenge to {opponent}...")
+                self._set_phase("CHALLENGING", f"Challenging {opponent} (3+2 Rated Standard)...", target_bot=opponent)
                 try:
-                    self.client.challenge_user(opponent, clock_limit=180, clock_increment=2, rated=self._auto_match_rated)
-                    self._log_challenge(f"Challenge sent to {opponent}", success=True)
+                    result = self.client.challenge_user(opponent, clock_limit=180, clock_increment=2, rated=self._auto_match_rated)
+                    challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
+                    self._set_phase("WAITING_REPLY", f"Waiting for {opponent} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=opponent)
+                    self._log_event(f"Challenge sent to {opponent}")
+                except urllib.error.HTTPError as e:
+                    err = e.read().decode('utf-8')
+                    self._set_phase("DECLINED", f"{opponent} declined ({err}) \u2014 trying next bot...", target_bot=opponent)
+                    self._log_event(f"Challenge to {opponent} failed: {err}")
+                    time.sleep(2)
+                    continue
                 except Exception as e:
-                    self._log_challenge(f"Challenge to {opponent} failed: {e}", success=False)
-                # Wait ~10s before next challenge if declined/timed out
-                print(f"Challenge declined/timed out, trying next...", flush=True)
-                self._log_challenge("Challenge declined/timed out, trying next...")
+                    self._set_phase("DECLINED", f"{opponent} error ({e}) \u2014 trying next bot...", target_bot=opponent)
+                    self._log_event(f"Challenge to {opponent} error: {e}")
+                    time.sleep(2)
+                    continue
+                # Wait ~10s for acceptance
                 time.sleep(10)
+                if self._current_game_id:
+                    return  # Game started
+                self._set_phase("DECLINED", f"{opponent} declined (timeout) \u2014 trying next bot...", target_bot=opponent)
+                self._log_event(f"{opponent} did not accept in time")
             
             # If we exhausted candidates, wait and retry
             if self._auto_match_active:
-                self._log_challenge("Exhausted candidates, retrying in 30s", success=False)
+                self._set_phase("IDLE", "Exhausted candidates, retrying in 30s")
                 threading.Timer(30.0, self._auto_match_next).start()
         except Exception as e:
-            self._log_challenge(f"Auto-match error: {e}", success=False)
+            self._set_phase("IDLE", f"Auto-match error: {e}")
+            self._log_event(f"Auto-match error: {e}")
             if self._auto_match_active:
                 threading.Timer(30.0, self._auto_match_next).start()
 
