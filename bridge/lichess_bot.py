@@ -344,12 +344,13 @@ class DashboardServer:
         self.bot_ref = bot_ref
         self.host = host
         self.port = port
-        self.server: Optional[http.server.HTTPServer] = None
+        self.server: Optional[http.server.ThreadingHTTPServer] = None
         self.thread: Optional[threading.Thread] = None
 
     def start(self):
         handler = lambda *args, **kwargs: DashboardHandler(self.bot_ref, *args, **kwargs)
-        self.server = http.server.HTTPServer((self.host, self.port), handler)
+        self.server = http.server.ThreadingHTTPServer((self.host, self.port), handler)
+        self.server.allow_reuse_address = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         print(f"Dashboard started at http://{self.host}:{self.port}", flush=True)
@@ -380,21 +381,24 @@ class LichessClient:
         endpoint: str,
         data: Optional[Dict] = None,
         stream: bool = False,
+        timeout: Optional[float] = None,
     ) -> HTTPResponse:
         url = f"{LICHESS_API}{endpoint}"
         body = json.dumps(data).encode("utf-8") if data else None
         req = urllib.request.Request(url, data=body, method=method, headers=self.headers)
-        # Use 3.0s socket timeout for bot-list fetch; 30s for others
-        timeout = 3.0 if endpoint == "/api/bot/online" else 30
+        # Default timeouts: 10s for startup calls, 3.0s for bot-list fetch, 30s for others
+        if timeout is None:
+            if endpoint == "/api/bot/online":
+                timeout = 3.0
+            elif endpoint in ("/account", "/upgrade"):
+                timeout = 10.0
+            else:
+                timeout = 30.0
         return urllib.request.urlopen(req, timeout=timeout)
 
     def upgrade_account(self) -> Dict[str, Any]:
         """POST https://lichess.org - convert account to bot (per official docs)."""
-        url = "https://lichess.org"
-        body = b"{}"
-        req = urllib.request.Request(url, data=body, method="POST", headers=self.headers)
-        resp = urllib.request.urlopen(req, timeout=30)
-        return json.loads(resp.read().decode("utf-8"))
+        return self._request("POST", "/upgrade", {}, timeout=10.0)
 
     def stream_events(self) -> HTTPResponse:
         """GET /stream/event - NDJSON event stream."""
@@ -471,7 +475,7 @@ class LichessClient:
 
     def get_account_info(self) -> Dict[str, Any]:
         """GET /account - fetch account info including perfs."""
-        resp = self._request("GET", "/account")
+        resp = self._request("GET", "/account", timeout=10.0)
         return json.loads(resp.read().decode("utf-8"))
 
     def resign_game(self, game_id: str) -> Dict[str, Any]:
@@ -924,12 +928,16 @@ class LichessBot:
     """Main bot orchestrator: event stream, challenge handling, game spawning, auto-match, dashboard."""
 
     def __init__(self, token: str):
+        # Start dashboard FIRST - before engine spawn or Lichess connection
+        self.dashboard = DashboardServer(self)
+        self.dashboard.start()
+        print("Dashboard started at http://127.0.0.1:5001", flush=True)
+
         self.client = LichessClient(token)
         self.engine = Engine(ENGINE_PATH)
         self.experience = ExperienceStore(DEFAULT_DB_PATH)
         self.games: Dict[str, GameHandler] = {}
         self._running = True
-        self.dashboard = DashboardServer(self)
         self._username: Optional[str] = None
         self._blitz_rating: Optional[int] = None
         self._rapid_rating: Optional[int] = None
@@ -1034,8 +1042,18 @@ class LichessBot:
             self._challenge_log = self._challenge_log[-100:]
 
     def run(self) -> None:
-        self.dashboard.start()
+        # Boot logs: connecting to Lichess API
+        print("Connecting to Lichess API...", flush=True)
+        self._log_event("Connecting to Lichess API...")
+        
         self._fetch_account_info()
+        
+        # Boot logs: connected
+        if self._username:
+            msg = f"Connected as {self._username}!"
+            print(msg, flush=True)
+            self._log_event(msg)
+        
         self._set_phase("IDLE", "Idle \u2014 click Start Auto-Match or challenge a bot")
         self._log_event("Starting Lichess Bot event stream...")
         self._log_event(f"Engine: {self.engine.health()}")
