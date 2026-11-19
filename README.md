@@ -52,6 +52,52 @@ python -m bridge.server --port 5000
 4. Allow `127.0.0.1` local connections when prompted.
 5. Use for **offline self-study**, **post-game review**, and **computer bot practice**. The script talks **only** to the local bridge; no external service is contacted.
 
+### 6. Running as an Official Lichess BOT
+Duckish can run as an official Lichess Bot using the [Lichess Bot API](https://lichess.org/api#tag/Bot) - no browser, no userscript, pure HTTP streaming.
+
+#### Prerequisites
+1. Create a **new Lichess account** (or use an existing 0-game account).
+2. Generate a **Bot API token**: visit <https://lichess.org/account/oauth/token/create> → scope `bot:play` → copy the `lip_...` token.
+3. Store the token in a local `.env` file (gitignored):
+   ```bash
+   echo "LICHESS_TOKEN=lip_your_token_here" > .env
+   ```
+   Or export it in your shell: `export LICHESS_TOKEN=lip_...`
+
+#### One-time Account Upgrade
+**Warning: this permanently converts the account into a BOT account.** The account will be marked as a bot on Lichess, cannot play in human tournaments, and the change is irreversible.
+```bash
+python -m bridge.lichess_bot --upgrade
+# or with explicit token
+python -m bridge.lichess_bot --token lip_... --upgrade
+```
+
+#### Run the Bot
+```bash
+# Start listening for challenges and play automatically
+python -m bridge.lichess_bot
+```
+The bot will:
+- Accept standard-variant challenges in bullet, blitz, rapid (casual or rated)
+- Decline correspondence, chess960, and other variants
+- Drive a persistent `duckish.exe` instance (Hash 256 MB, MultiPV 1, Lazy SMP threads, Performance.bin book if present)
+- Manage clock with a 100 ms move-overhead buffer so it never flags on network latency
+- Record finished games into `bridge/experience.py` (Duckish learns from every bot match)
+
+#### Challenge a Specific Bot from CLI
+```bash
+# Rated 3+2 challenge
+python -m bridge.lichess_bot --challenge LeelaAlien
+
+# Casual 3+2 challenge
+python -m bridge.lichess_bot --challenge LeelaAlien --casual
+```
+
+#### Token Safety
+- **Never hardcode or commit** `lip_...` tokens.
+- `.env` is in `.gitignore` - tokens stay local.
+- The bot reads `LICHESS_TOKEN` from environment or `--token` argument only.
+
 <div align="center">
 
   ![Logo](assets/images/logo2.png)
