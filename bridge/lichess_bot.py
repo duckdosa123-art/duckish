@@ -304,8 +304,11 @@ class LichessClient:
         return urllib.request.urlopen(req, timeout=30)
 
     def upgrade_account(self) -> Dict[str, Any]:
-        """POST /bot/account/upgrade - convert account to bot."""
-        resp = self._request("POST", "/bot/account/upgrade")
+        """POST https://lichess.org - convert account to bot (per official docs)."""
+        url = "https://lichess.org"
+        body = b"{}"
+        req = urllib.request.Request(url, data=body, method="POST", headers=self.headers)
+        resp = urllib.request.urlopen(req, timeout=30)
         return json.loads(resp.read().decode("utf-8"))
 
     def stream_events(self) -> HTTPResponse:
