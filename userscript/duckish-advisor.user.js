@@ -2,10 +2,12 @@
 // @name         Duckish Advisor
 // @namespace    duckish
 // @version      1.0.0
-// @description  Offline Duckish engine analysis overlay for Chess.com (self-study / post-game review / bot practice).
+// @description  Offline Duckish engine analysis overlay for Chess.com and Lichess.org (self-study / post-game review / bot practice).
 // @author       Duck
 // @match        https://chess.com/*
 // @match        https://*.chess.com/*
+// @match        https://lichess.org/*
+// @match        https://*.lichess.org/*
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // @run-at       document-idle
@@ -28,113 +30,223 @@ const state = {
   svg: null,
   debounceTimer: null,
   gameOverSent: false,
-  playerColor: "white"
+  playerColor: "white",
+  site: null
 };
 
 // -----------------------------------------------------------------------------
-// DOM Extraction
+// Site Adapter
 // -----------------------------------------------------------------------------
-function extractMoves() {
-  const sanList = [];
-  const plyElements = document.querySelectorAll(
-    ".move-list-row .main-line-ply, .move-list-row [data-node].main-line-ply"
-  );
-  plyElements.forEach((ply) => {
-    let container = ply.querySelector(".node-highlight-content") || ply;
-    const clone = container.cloneNode(true);
-    const figurineEls = clone.querySelectorAll("[data-figurine]");
-    figurineEls.forEach((el) => {
-      const fig = el.getAttribute("data-figurine") || "";
-      const textNode = document.createTextNode(fig);
-      el.replaceWith(textNode);
-    });
-    const san = clone.textContent.trim().replace(/\s+/g, '');
-    if (san) sanList.push(san);
-  });
-  return sanList;
-}
-
-function getOrientation() {
-  const board = document.querySelector("wc-chess-board");
-  const isFlipped = board && board.classList.contains("flipped");
-  const orientation = isFlipped ? "b" : "w";
-  state.playerColor = isFlipped ? "black" : "white";
-  return orientation;
-}
-
-// -----------------------------------------------------------------------------
-// Game Over Detection & Reporting
-// -----------------------------------------------------------------------------
-function detectGameResult() {
-  // Chess.com shows game result in various elements
-  // Check for game over modal or result text
-  const resultSelectors = [
-    ".game-over-modal",
-    ".game-over",
-    "[data-testid='game-over']",
-    ".archive-game-result",
-    ".game-result",
-    ".game-over-modal-content",
-    ".modal-game-over-component",
-    "[class*='game-over-header']",
-    ".board-layout-sidebar",
-    ".board-layout-main"
-  ];
-  
-  // Also search for result strings anywhere in board/sidebar containers
-  const resultStrings = [
-    "you won",
-    "white won",
-    "black won",
-    "checkmate",
-    "resignation",
-    "resigned",
-    "draw",
-    "stalemate",
-    "insufficient material",
-    "threefold repetition",
-    "50 move rule",
-    "timeout",
-    "abandoned"
-  ];
-  
-  // Check explicit result elements first
-  for (const sel of resultSelectors) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const text = el.textContent.toLowerCase();
-      for (const rs of resultStrings) {
-        if (text.includes(rs)) {
-          // Determine winner from text
-          if (rs === "you won") {
-            return { result: "win", winner: state.playerColor };
+const SiteAdapter = {
+  chesscom: {
+    name: "chesscom",
+    extractMoves: function() {
+      const sanList = [];
+      const plyElements = document.querySelectorAll(
+        ".move-list-row .main-line-ply, .move-list-row [data-node].main-line-ply"
+      );
+      plyElements.forEach((ply) => {
+        let container = ply.querySelector(".node-highlight-content") || ply;
+        const clone = container.cloneNode(true);
+        const figurineEls = clone.querySelectorAll("[data-figurine]");
+        figurineEls.forEach((el) => {
+          const fig = el.getAttribute("data-figurine") || "";
+          const textNode = document.createTextNode(fig);
+          el.replaceWith(textNode);
+        });
+        const san = clone.textContent.trim().replace(/\s+/g, '');
+        if (san) sanList.push(san);
+      });
+      return sanList;
+    },
+    getOrientation: function() {
+      const board = document.querySelector("wc-chess-board");
+      const isFlipped = board && board.classList.contains("flipped");
+      const orientation = isFlipped ? "b" : "w";
+      state.playerColor = isFlipped ? "black" : "white";
+      return orientation;
+    },
+    getBoardElement: function() {
+      return document.querySelector("wc-chess-board");
+    },
+    getBoardContainer: function() {
+      const board = this.getBoardElement();
+      return board ? board.parentElement : null;
+    },
+    detectGameResult: function() {
+      const resultSelectors = [
+        ".game-over-modal",
+        ".game-over",
+        "[data-testid='game-over']",
+        ".archive-game-result",
+        ".game-result",
+        ".game-over-modal-content",
+        ".modal-game-over-component",
+        "[class*='game-over-header']",
+        ".board-layout-sidebar",
+        ".board-layout-main"
+      ];
+      
+      const resultStrings = [
+        "you won",
+        "white won",
+        "black won",
+        "checkmate",
+        "resignation",
+        "resigned",
+        "draw",
+        "stalemate",
+        "insufficient material",
+        "threefold repetition",
+        "50 move rule",
+        "timeout",
+        "abandoned"
+      ];
+      
+      for (const sel of resultSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.textContent.toLowerCase();
+          for (const rs of resultStrings) {
+            if (text.includes(rs)) {
+              if (rs === "you won") {
+                return { result: "win", winner: state.playerColor };
+              }
+              if (rs === "white won" || (text.includes("white") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+                return { result: "win", winner: "white" };
+              }
+              if (rs === "black won" || (text.includes("black") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+                return { result: "win", winner: "black" };
+              }
+              if (rs === "draw" || rs === "stalemate" || rs === "insufficient material" || rs === "threefold repetition" || rs === "50 move rule") {
+                return { result: "draw", winner: "draw" };
+              }
+              if (rs === "checkmate" || rs === "resignation" || rs === "resigned" || rs === "timeout" || rs === "abandoned") {
+                if (text.includes("white") && !text.includes("black")) {
+                  return { result: "win", winner: "white" };
+                }
+                if (text.includes("black") && !text.includes("white")) {
+                  return { result: "win", winner: "black" };
+                }
+                return { result: "win", winner: null };
+              }
+            }
           }
-          if (rs === "white won" || (text.includes("white") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+        }
+      }
+      return null;
+    }
+  },
+  lichess: {
+    name: "lichess",
+    extractMoves: function() {
+      const sanList = [];
+      // Main game moves: .z7yx elements inside the move list (app > z7yx)
+      const moveElements = document.querySelectorAll("z7yx");
+      moveElements.forEach((el) => {
+        const san = el.textContent.trim().replace(/\s+/g, '');
+        if (san) sanList.push(san);
+      });
+      // Also check for analysis/study board moves: l4x > kwdb
+      const analysisMoves = document.querySelectorAll("l4x > kwdb");
+      analysisMoves.forEach((el) => {
+        const san = el.textContent.trim().replace(/\s+/g, '');
+        if (san && !sanList.includes(san)) sanList.push(san);
+      });
+      return sanList;
+    },
+    getOrientation: function() {
+      const wrap = document.querySelector(".cg-wrap");
+      const isBlack = wrap && wrap.classList.contains("orientation-black");
+      const orientation = isBlack ? "b" : "w";
+      state.playerColor = isBlack ? "black" : "white";
+      return orientation;
+    },
+    getBoardElement: function() {
+      return document.querySelector(".cg-board");
+    },
+    getBoardContainer: function() {
+      return document.querySelector(".cg-wrap") || document.querySelector(".cg-board");
+    },
+    detectGameResult: function() {
+      const resultSelectors = [
+        ".rcontrols .result-wrap",
+        ".rcontrols .result",
+        ".rcontrols .status"
+      ];
+      
+      for (const sel of resultSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.textContent.toLowerCase();
+          // "White is victorious", "Black is victorious", "Checkmate", "Draw", "Stalemate"
+          if (text.includes("white is victorious") || text.includes("white wins")) {
             return { result: "win", winner: "white" };
           }
-          if (rs === "black won" || (text.includes("black") && (text.includes("won") || text.includes("victory") || text.includes("checkmate")))) {
+          if (text.includes("black is victorious") || text.includes("black wins")) {
             return { result: "win", winner: "black" };
           }
-          if (rs === "draw" || rs === "stalemate" || rs === "insufficient material" || rs === "threefold repetition" || rs === "50 move rule") {
-            return { result: "draw", winner: "draw" };
-          }
-          if (rs === "checkmate" || rs === "resignation" || rs === "resigned" || rs === "timeout" || rs === "abandoned") {
-            // Try to infer winner from context
-            if (text.includes("white") && !text.includes("black")) {
-              return { result: "win", winner: "white" };
-            }
-            if (text.includes("black") && !text.includes("white")) {
+          if (text.includes("checkmate")) {
+            // Winner is the opposite of who is checkmated
+            if (text.includes("white")) {
               return { result: "win", winner: "black" };
             }
-            // Generic - will be resolved server-side
+            if (text.includes("black")) {
+              return { result: "win", winner: "white" };
+            }
+            return { result: "win", winner: null };
+          }
+          if (text.includes("draw") || text.includes("stalemate") || text.includes("insufficient") || text.includes("repetition") || text.includes("50 move")) {
+            return { result: "draw", winner: "draw" };
+          }
+          if (text.includes("timeout") || text.includes("abandoned") || text.includes("resign")) {
+            if (text.includes("white")) {
+              return { result: "win", winner: "black" };
+            }
+            if (text.includes("black")) {
+              return { result: "win", winner: "white" };
+            }
             return { result: "win", winner: null };
           }
         }
       }
+      return null;
     }
   }
-  
+};
+
+function getCurrentSite() {
+  const hostname = window.location.hostname;
+  if (hostname === "chess.com" || hostname.endsWith(".chess.com")) {
+    return "chesscom";
+  }
+  if (hostname === "lichess.org" || hostname.endsWith(".lichess.org")) {
+    return "lichess";
+  }
   return null;
+}
+
+function getAdapter() {
+  const site = state.site;
+  return SiteAdapter[site] || SiteAdapter.chesscom;
+}
+
+// -----------------------------------------------------------------------------
+// DOM Extraction (delegated to site adapter)
+// -----------------------------------------------------------------------------
+function extractMoves() {
+  return getAdapter().extractMoves();
+}
+
+function getOrientation() {
+  return getAdapter().getOrientation();
+}
+
+// -----------------------------------------------------------------------------
+// Game Over Detection & Reporting (delegated to site adapter)
+// -----------------------------------------------------------------------------
+function detectGameResult() {
+  return getAdapter().detectGameResult();
 }
 
 function sendGameOver(result, winner, moves) {
@@ -465,18 +577,19 @@ function analyze() {
 }
 
 // -----------------------------------------------------------------------------
-// Arrow Overlay (SVG)
+// Arrow Overlay (SVG) - uses site adapter for board element
 // -----------------------------------------------------------------------------
 function drawBestArrow(data) {
   if (state.svg) {
     state.svg.remove();
     state.svg = null;
   }
-  const board = document.querySelector("wc-chess-board");
+  const board = getAdapter().getBoardElement();
   if (!board) return;
   const best = (data.bestmove && data.bestmove.uci) ? data.bestmove : (data.multipv && data.multipv[0]);
   if (!best || !best.uci) return;
-  const parent = board.parentElement;
+  const parent = getAdapter().getBoardContainer();
+  if (!parent) return;
   const computed = getComputedStyle(parent);
   if (computed.position === "static") parent.style.position = "relative";
   const width = board.clientWidth;
@@ -560,6 +673,15 @@ function drawBestArrow(data) {
 // -----------------------------------------------------------------------------
 (function init() {
   try {
+    // Hostname guard: only run on chess.com or lichess.org
+    const site = getCurrentSite();
+    if (!site) {
+      console.log("[Duckish] Not on a supported site, exiting");
+      return;
+    }
+    state.site = site;
+    console.log("[Duckish] Initialized for", site);
+    
     createPanel();
     setTimeout(() => {
       state.moves = extractMoves();

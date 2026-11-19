@@ -45,10 +45,10 @@ python -m bridge.server --port 5000
 - **Analysis endpoint**: `POST /analyze` with a SAN move list → returns ranked candidates with UCI + SAN PVs.
 - **Health check**: `GET /health`.
 
-### 5. Tampermonkey Userscript (Chess.com Advisor Overlay)
+### 5. Tampermonkey Userscript (Chess.com & Lichess Advisor Overlay)
 1. Install **Tampermonkey** in Chrome / Opera GX / Edge.
 2. Create a new script, paste the full contents of `userscript/duckish-advisor.user.js`, save.
-3. Visit a Chess.com game or bot page.
+3. Visit a Chess.com or Lichess.org game or bot page.
 4. Allow `127.0.0.1` local connections when prompted.
 5. Use for **offline self-study**, **post-game review**, and **computer bot practice**. The script talks **only** to the local bridge; no external service is contacted.
 
