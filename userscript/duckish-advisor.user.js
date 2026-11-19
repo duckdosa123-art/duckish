@@ -584,10 +584,102 @@ function drawBestArrow(data) {
     state.svg.remove();
     state.svg = null;
   }
-  const board = getAdapter().getBoardElement();
-  if (!board) return;
   const best = (data.bestmove && data.bestmove.uci) ? data.bestmove : (data.multipv && data.multipv[0]);
   if (!best || !best.uci) return;
+  const uci = best.uci;
+  if (!/^[a-h][1-8][a-h][1-8]/.test(uci || "")) return;
+
+  // Lichess-specific overlay with fixed viewBox and explicit layering
+  if (state.site === "lichess") {
+    const boardEl = document.querySelector("cg-board") || document.querySelector("cg-container") || document.querySelector(".cg-wrap");
+    if (!boardEl) return;
+    const parent = boardEl.closest("cg-container") || boardEl.closest(".cg-wrap") || boardEl.parentElement;
+    if (!parent) return;
+    const computed = getComputedStyle(parent);
+    if (computed.position === "static") parent.style.position = "relative";
+
+    const fromFile = uci.charCodeAt(0) - 97;
+    const fromRank = parseInt(uci.charAt(1), 10) - 1;
+    const toFile = uci.charCodeAt(2) - 97;
+    const toRank = parseInt(uci.charAt(3), 10) - 1;
+    const orient = state.orientation;
+    const fFile = orient === "b" ? 7 - fromFile : fromFile;
+    const fRank = orient === "b" ? 7 - fromRank : fromRank;
+    const tFile = orient === "b" ? 7 - toFile : toFile;
+    const tRank = orient === "b" ? 7 - toRank : toRank;
+
+    // Fixed 800x800 viewBox (100 units per square)
+    const SQ = 100;
+    const cx1 = (fFile + 0.5) * SQ;
+    const cy1 = (7.5 - fRank) * SQ;
+    const rawX2 = (tFile + 0.5) * SQ;
+    const rawY2 = (7.5 - tRank) * SQ;
+    const dx = rawX2 - cx1;
+    const dy = rawY2 - cy1;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const shorten = SQ * 0.35;
+    const cx2 = rawX2 - (dx / dist) * shorten;
+    const cy2 = rawY2 - (dy / dist) * shorten;
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;";
+    svg.setAttribute("viewBox", "0 0 800 800");
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    const defs = document.createElementNS(svgNS, "defs");
+    const marker = document.createElementNS(svgNS, "marker");
+    marker.setAttribute("id", "duckish-arrowhead");
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "8");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "6");
+    marker.setAttribute("markerHeight", "6");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const path = document.createElementNS(svgNS, "path");
+    path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    path.setAttribute("fill", "#7dd3fc");
+    marker.appendChild(path);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    const fromRect = document.createElementNS(svgNS, "rect");
+    fromRect.setAttribute("x", fFile * SQ);
+    fromRect.setAttribute("y", (7 - fRank) * SQ);
+    fromRect.setAttribute("width", SQ);
+    fromRect.setAttribute("height", SQ);
+    fromRect.setAttribute("fill", "#fde047");
+    fromRect.setAttribute("fill-opacity", "0.35");
+    svg.appendChild(fromRect);
+
+    const toRect = document.createElementNS(svgNS, "rect");
+    toRect.setAttribute("x", tFile * SQ);
+    toRect.setAttribute("y", (7 - tRank) * SQ);
+    toRect.setAttribute("width", SQ);
+    toRect.setAttribute("height", SQ);
+    toRect.setAttribute("fill", "#4ade80");
+    toRect.setAttribute("fill-opacity", "0.35");
+    svg.appendChild(toRect);
+
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("x1", cx1);
+    line.setAttribute("y1", cy1);
+    line.setAttribute("x2", cx2);
+    line.setAttribute("y2", cy2);
+    line.setAttribute("stroke", "#7dd3fc");
+    line.setAttribute("stroke-width", Math.max(2, SQ * 0.12));
+    line.setAttribute("stroke-linecap", "round");
+    line.setAttribute("marker-end", "url(#duckish-arrowhead)");
+    svg.appendChild(line);
+
+    parent.appendChild(svg);
+    state.svg = svg;
+    return;
+  }
+
+  // Chess.com (existing logic)
+  const board = getAdapter().getBoardElement();
+  if (!board) return;
   const parent = getAdapter().getBoardContainer();
   if (!parent) return;
   const computed = getComputedStyle(parent);
@@ -595,8 +687,6 @@ function drawBestArrow(data) {
   const width = board.clientWidth;
   const height = board.clientHeight;
   const sq = width / 8;
-  const uci = best.uci;
-  if (!/^[a-h][1-8][a-h][1-8]/.test(uci || "")) return;
   const fromFile = uci.charCodeAt(0) - 97;
   const fromRank = parseInt(uci.charAt(1), 10) - 1;
   const toFile = uci.charCodeAt(2) - 97;
