@@ -289,35 +289,34 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.bot_ref = bot_ref
         super().__init__(*args, **kwargs)
 
+    def _write_response(self, status: int, headers: Dict[str, str], body: bytes) -> None:
+        """Write response, ignoring client disconnect errors (WinError 10053, BrokenPipeError)."""
+        try:
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, BrokenPipeError, OSError):
+            # Client disconnected (browser refresh, tab close) - ignore silently
+            pass
+
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+            self._write_response(200, {"Content-Type": "text/html; charset=utf-8"}, DASHBOARD_HTML.encode("utf-8"))
         elif self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
             status = self.bot_ref.get_dashboard_status()
-            self.wfile.write(json.dumps(status).encode("utf-8"))
+            self._write_response(200, {"Content-Type": "application/json"}, json.dumps(status).encode("utf-8"))
         else:
-            self.send_response(404)
-            self.end_headers()
+            self._write_response(404, {}, b"")
 
     def do_POST(self):
         if self.path == "/api/auto-match/start":
             self.bot_ref.start_auto_match()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
         elif self.path == "/api/auto-match/stop":
             self.bot_ref.stop_auto_match()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
         elif self.path == "/api/challenge":
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length).decode("utf-8")
@@ -327,17 +326,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 rated = data.get("rated", True)
                 if username:
                     self.bot_ref.challenge_user(username, rated=rated)
-                    self.send_response(200)
-                    self.wfile.write(b'{"ok":true}')
+                    self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
                 else:
-                    self.send_response(400)
-                    self.wfile.write(b'{"error":"username required"}')
+                    self._write_response(400, {"Content-Type": "application/json"}, b'{"error":"username required"}')
             except Exception as e:
-                self.send_response(400)
-                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                self._write_response(400, {"Content-Type": "application/json"}, json.dumps({"error": str(e)}).encode("utf-8"))
         else:
-            self.send_response(404)
-            self.end_headers()
+            self._write_response(404, {}, b"")
 
     def log_message(self, format, *args):
         pass  # suppress default logging
@@ -388,7 +383,9 @@ class LichessClient:
         url = f"{LICHESS_API}{endpoint}"
         body = json.dumps(data).encode("utf-8") if data else None
         req = urllib.request.Request(url, data=body, method=method, headers=self.headers)
-        return urllib.request.urlopen(req, timeout=30)
+        # Use 10s socket timeout for bot-list fetch; 30s for others
+        timeout = 10 if endpoint == "/api/bot/online" else 30
+        return urllib.request.urlopen(req, timeout=timeout)
 
     def upgrade_account(self) -> Dict[str, Any]:
         """POST https://lichess.org - convert account to bot (per official docs)."""
@@ -436,10 +433,28 @@ class LichessClient:
         return json.loads(resp.read().decode("utf-8"))
 
     def get_online_bots(self) -> List[Dict[str, Any]]:
-        """GET /api/bot/online - fetch list of online bots."""
+        """GET /api/bot/online - fetch list of online bots via NDJSON stream."""
         resp = self._request("GET", "/api/bot/online")
-        data = resp.read().decode("utf-8")
-        return json.loads(data)
+        bots: List[Dict[str, Any]] = []
+        try:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line:
+                    continue
+                try:
+                    bot = json.loads(line)
+                    if isinstance(bot, dict) and ("username" in bot or "id" in bot):
+                        bots.append(bot)
+                        if len(bots) >= 50:
+                            break
+                except json.JSONDecodeError:
+                    continue
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        return bots
 
     def get_account_info(self) -> Dict[str, Any]:
         """GET /account - fetch account info including perfs."""
@@ -1124,7 +1139,11 @@ class LichessBot:
             return
         
         try:
+            print("Fetching online bots...", flush=True)
+            self._log_challenge("Fetching online bots...")
             bots = self.client.get_online_bots()
+            print(f"Found {len(bots)} online bots", flush=True)
+            self._log_challenge(f"Found {len(bots)} online bots")
             # Filter: skip self, skip bots with 0 blitz games
             candidates = []
             for bot in bots:
@@ -1138,6 +1157,7 @@ class LichessBot:
                 candidates.append(name)
             
             if not candidates:
+                print("No suitable bots found, retrying in 30s", flush=True)
                 self._log_challenge("No suitable bots found, retrying in 30s", success=False)
                 threading.Timer(30.0, self._auto_match_next).start()
                 return
@@ -1147,14 +1167,19 @@ class LichessBot:
                 if not self._auto_match_active:
                     return
                 if self._current_game_id:
+                    print(f"Match started: https://lichess.org/{self._current_game_id}", flush=True)
+                    self._log_challenge(f"Match started: https://lichess.org/{self._current_game_id}", success=True)
                     return  # Game started
-                self._log_challenge(f"Challenging {opponent} ({'rated' if self._auto_match_rated else 'casual'})")
+                print(f"Sending 3+2 challenge to {opponent}...", flush=True)
+                self._log_challenge(f"Sending 3+2 challenge to {opponent}...")
                 try:
                     self.client.challenge_user(opponent, clock_limit=180, clock_increment=2, rated=self._auto_match_rated)
                     self._log_challenge(f"Challenge sent to {opponent}", success=True)
                 except Exception as e:
                     self._log_challenge(f"Challenge to {opponent} failed: {e}", success=False)
                 # Wait ~10s before next challenge if declined/timed out
+                print(f"Challenge declined/timed out, trying next...", flush=True)
+                self._log_challenge("Challenge declined/timed out, trying next...")
                 time.sleep(10)
             
             # If we exhausted candidates, wait and retry
