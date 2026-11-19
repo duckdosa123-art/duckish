@@ -29,6 +29,32 @@ from experience import ExperienceStore, DEFAULT_DB_PATH, BLUNDER_THRESHOLD_CP, L
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE_PATH = os.path.join(REPO_ROOT, "target", "release", "duckish.exe")
+
+
+def load_dotenv_token(path: str = os.path.join(REPO_ROOT, ".env")) -> Optional[str]:
+    """Load LICHESS_TOKEN from a .env file at the given path."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key.strip() == "LICHESS_TOKEN":
+                    # Strip surrounding quotes if present
+                    value = value.strip()
+                    if (value.startswith('"') and value.endswith('"')) or (
+                        value.startswith("'") and value.endswith("'")
+                    ):
+                        value = value[1:-1]
+                    return value
+    except OSError:
+        pass
+    return None
 DEFAULT_HASH_MB = 256
 DEFAULT_THREADS = max(1, (os.cpu_count() or 2) // 2)
 BOOK_PATH = os.environ.get("DUCKISH_BOOK_PATH", "")
@@ -701,9 +727,9 @@ def main() -> None:
     parser.add_argument("--casual", action="store_true", help="Make challenge casual (default: rated)")
     args = parser.parse_args()
 
-    token = args.token or os.environ.get("LICHESS_TOKEN")
+    token = args.token or os.environ.get("LICHESS_TOKEN") or load_dotenv_token()
     if not token:
-        print("Error: Lichess token required. Set LICHESS_TOKEN env var or use --token", flush=True)
+        print("Error: Lichess token required. Set LICHESS_TOKEN env var, use --token, or add to .env", flush=True)
         sys.exit(1)
 
     bot = LichessBot(token)
