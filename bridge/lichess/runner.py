@@ -191,19 +191,24 @@ class GameHandler:
         my_winc = self.winc if self.color == "white" else None
         my_binc = self.binc if self.color == "black" else None
 
+        # Check experience book for learned adjustments at this position
         try:
-            bestmove = self.engine.best_move(
-                self.moves_uci,
-                wtime=my_wtime,
-                btime=my_btime,
-                winc=my_winc,
-                binc=my_binc,
-            )
-        except Exception as e:
-            self._log(f"[Game {self.game_id}] Engine error: {e}")
-            import traceback
-            print(traceback.format_exc(), flush=True)
-            return
+            current_fen = self._board().fen()
+            # Get MultiPV candidates with experience adjustments
+            multipv = self.engine.best_moves_multipv(self.moves_uci, movetime=1000, multipv=3)
+            if multipv:
+                adjusted = self.experience.apply_adjustments(current_fen, multipv)
+                if adjusted:
+                    bestmove = adjusted[0].get("uci", "")
+                    # Log if experience affected the choice
+                    if adjusted[0].get("learned"):
+                        print(f"[Game {self.game_id}] Experience adjusted move: {bestmove}", flush=True)
+                else:
+                    bestmove = multipv[0]["uci"]
+            else:
+                bestmove = self.engine.best_move(self.moves_uci)
+        except Exception:
+            bestmove = self.engine.best_move(self.moves_uci)
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
@@ -238,6 +243,25 @@ class GameHandler:
 
         print(f"[Game {self.game_id}] Finished: {game_result} ({status})", flush=True)
         self._record_experience(game_result)
+
+        # Auto-train on loss/draw games with >= 8 moves
+        if game_result in ("loss", "draw") and len(self.moves_uci) >= 8:
+            import threading
+            def _train():
+                try:
+                    summary = self.experience.record_game(
+                        game_id=self.game_id,
+                        moves_uci=self.moves_uci,
+                        result=game_result,
+                        engine=self.engine,
+                        verbose_log=lambda msg: print(msg, flush=True),
+                    )
+                    if not summary.get("skipped"):
+                        print(f"[Experience] Audited Lichess game {self.game_id} ({game_result}): found {summary['turning_points']} turning points | Penalized {summary['penalized']} moves | Total DB lessons: {summary['total_lessons']}", flush=True)
+                except Exception as e:
+                    print(f"[Experience] Training failed for game {self.game_id}: {e}", flush=True)
+            threading.Thread(target=_train, daemon=True).start()
+
         self._running = False
 
     def _record_experience(self, result: str) -> None:

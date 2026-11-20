@@ -361,6 +361,171 @@ def test_san_whitespace_normalization():
             return
         print(f"PASS: normalization {raw} -> {normalized}")
 
+class MockEngine:
+    """Scripted engine for tests. Returns per-position scores keyed by len(moves_uci)."""
+
+    def __init__(self, scores, best_uci="e2e4"):
+        self.scores = scores  # dict: len(moves_uci) -> score_cp
+        self.best_uci = best_uci
+
+    def best_moves_multipv(self, moves_uci, movetime=1500, multipv=3):
+        score = self.scores.get(len(moves_uci), 0)
+        results = [{"uci": self.best_uci, "score_cp": score, "rank": 1}]
+        if multipv >= 2:
+            results.append({"uci": "d2d4", "score_cp": score - 30, "rank": 2})
+        if multipv >= 3:
+            results.append({"uci": "c2c4", "score_cp": score - 60, "rank": 3})
+        return results
+
+    def best_move(self, moves_uci, **kwargs):
+        return self.best_uci
+
+
+def _knight_shuffle_moves(n):
+    """Generate n legal UCI moves by shuffling knights back and forth."""
+    pattern = ["g1f3", "g8f6", "f3g1", "f6g8"]
+    return [pattern[i % len(pattern)] for i in range(n)]
+
+
+def _fen_after(moves_uci, n):
+    """Return FEN after replaying the first n moves from the start position."""
+    import chess
+    board = chess.Board()
+    for uci in moves_uci[:n]:
+        board.push(chess.Move.from_uci(uci))
+    return board.fen()
+
+
+def test_slow_drift_loss():
+    """Slow drift from +10 to -155 with no >80cp blunder: root-cause turning point found."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        store = ExperienceStore(db_path)
+
+        # Scores by ply index i (position before move i); first 8 plies are opening (score 0).
+        scores = {
+            8: 10, 9: -5, 10: -20, 11: -35, 12: -50, 13: -65,
+            14: -80, 15: -95, 16: -110, 17: -125, 18: -140, 19: -155,
+        }
+        moves = _knight_shuffle_moves(20)
+        engine = MockEngine(scores, best_uci="e2e4")
+
+        summary = store.record_game("driftloss", moves, "loss", engine)
+
+        if summary.get("skipped"):
+            print("FAIL: slow drift loss should not be skipped")
+            return
+        if summary["turning_points"] < 1:
+            print(f"FAIL: expected >=1 turning point, got {summary['turning_points']}")
+            return
+        if summary["penalized"] < 1:
+            print(f"FAIL: expected >=1 penalized move, got {summary['penalized']}")
+            return
+        if summary["boosted"] < 1:
+            print(f"FAIL: expected >=1 boosted move, got {summary['boosted']}")
+            return
+        if summary["total_lessons"] < 2:
+            print(f"FAIL: expected >=2 DB lessons, got {summary['total_lessons']}")
+            return
+
+        # Verify the root-cause move (ply 10) was penalized.
+        expected_ply = 10
+        fen = _fen_after(moves, expected_ply)
+        move_rec = store.get_move(fen, moves[expected_ply])
+        if move_rec is None or move_rec["penalty_cp"] <= 0:
+            print(f"FAIL: root-cause move at ply {expected_ply} ({moves[expected_ply]}) not penalized")
+            return
+
+        print("PASS: test_slow_drift_loss")
+    except Exception as e:
+        print(f"FAIL: test_slow_drift_loss -> {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.unlink(db_path)
+        except Exception:
+            pass
+
+
+def test_missed_win_draw():
+    """Draw after holding +120 and slipping to 0: advantage-lost turning point found."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        store = ExperienceStore(db_path)
+
+        scores = {8: 120, 9: 110, 10: 95, 11: 60, 12: 30, 13: 10}
+        moves = _knight_shuffle_moves(16)
+        engine = MockEngine(scores, best_uci="e2e4")
+
+        summary = store.record_game("missedwin", moves, "draw", engine)
+
+        if summary.get("skipped"):
+            print("FAIL: missed-win draw should not be skipped")
+            return
+        if summary["turning_points"] < 1:
+            print(f"FAIL: expected >=1 turning point, got {summary['turning_points']}")
+            return
+        if summary["penalized"] < 1:
+            print(f"FAIL: expected >=1 penalized move, got {summary['penalized']}")
+            return
+
+        # Advantage slipped below +50 around ply 11.
+        expected_ply = 11
+        fen = _fen_after(moves, expected_ply)
+        move_rec = store.get_move(fen, moves[expected_ply])
+        if move_rec is None or move_rec["penalty_cp"] <= 0:
+            print(f"FAIL: missed-win move at ply {expected_ply} ({moves[expected_ply]}) not penalized")
+            return
+
+        print("PASS: test_missed_win_draw")
+    except Exception as e:
+        print(f"FAIL: test_missed_win_draw -> {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.unlink(db_path)
+        except Exception:
+            pass
+
+
+def test_game_completion_triggers_training():
+    """record_game on a loss updates experience.db with lessons."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        store = ExperienceStore(db_path)
+
+        scores = {8: 40, 9: 10, 10: -30, 11: -160}
+        moves = _knight_shuffle_moves(12)
+        engine = MockEngine(scores, best_uci="e2e4")
+
+        summary = store.record_game("training", moves, "loss", engine)
+
+        if summary.get("skipped"):
+            print("FAIL: loss game with >=8 moves should not be skipped")
+            return
+        if summary["total_lessons"] <= 0:
+            print(f"FAIL: expected DB lessons > 0, got {summary['total_lessons']}")
+            return
+
+        stats = store.get_stats()
+        if stats["moves_count"] <= 0:
+            print(f"FAIL: expected moves_count > 0 after training, got {stats['moves_count']}")
+            return
+        if stats["mistakes_corrected"] <= 0:
+            print(f"FAIL: expected mistakes_corrected > 0, got {stats['mistakes_corrected']}")
+            return
+
+        print("PASS: test_game_completion_triggers_training")
+    except Exception as e:
+        print(f"FAIL: test_game_completion_triggers_training -> {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.unlink(db_path)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     test_constants()
     test_mate_score_to_cp()
@@ -370,3 +535,6 @@ if __name__ == "__main__":
     test_apply_adjustments_mate_candidate()
     test_get_stats()
     test_san_whitespace_normalization()
+    test_slow_drift_loss()
+    test_missed_win_draw()
+    test_game_completion_triggers_training()

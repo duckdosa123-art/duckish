@@ -252,6 +252,210 @@ class ExperienceStore:
                 "recent_lessons": recent_lessons,
             }
 
+    def record_game(
+        self,
+        game_id: str,
+        moves_uci: List[str],
+        result: str,  # "win" | "loss" | "draw"
+        engine,  # Engine instance with best_moves_multipv()
+        verbose_log=None,  # Optional callable(msg: str) for logging
+    ) -> Dict[str, Any]:
+        """Post-mortem turning-point analysis and experience recording.
+        
+        Analyzes the game trajectory, finds turning points, and records
+        penalties/bonuses. Returns summary dict with turning points found.
+        
+        Args:
+            game_id: Lichess game ID for logging
+            moves_uci: List of UCI moves in order
+            result: "win", "loss", or "draw"
+            engine: Engine instance with best_moves_multipv() method
+            verbose_log: Optional callable for logging (e.g., state.log)
+        
+        Returns:
+            Dict with: turning_points, penalized_moves, boosted_moves, total_lessons
+        """
+        import chess
+        
+        log = verbose_log or (lambda msg: None)
+        
+        if len(moves_uci) < 8:
+            return {"turning_points": 0, "penalized": 0, "boosted": 0, "skipped": True}
+        
+        # Only analyze losses and draws (skip wins)
+        if result == "win":
+            return {"turning_points": 0, "penalized": 0, "boosted": 0, "skipped": True}
+        
+        # Replay the game and evaluate each position
+        board = chess.Board()
+        evaluations: List[Dict[str, Any]] = []  # {ply, fen, move_uci, score_cp, best_uci}
+        
+        for i, uci in enumerate(moves_uci):
+            fen_before = board.fen()
+            
+            # Skip opening book positions (first 8 plies)
+            if i >= 8:
+                try:
+                    multipv = engine.best_moves_multipv([m for m in moves_uci[:i]], movetime=1200, multipv=1)
+                    score_cp = multipv[0]["score_cp"] if multipv else 0
+                    best_uci = multipv[0]["uci"] if multipv else uci
+                except Exception:
+                    score_cp = 0
+                    best_uci = uci
+            else:
+                score_cp = 0
+                best_uci = uci
+            
+            try:
+                move = chess.Move.from_uci(uci)
+                board.push(move)
+            except ValueError:
+                break
+            
+            evaluations.append({
+                "ply": i,
+                "fen": fen_before,
+                "move_uci": uci,
+                "score_cp": score_cp,
+                "best_uci": best_uci,
+            })
+        
+        if not evaluations:
+            return {"turning_points": 0, "penalized": 0, "boosted": 0, "skipped": True}
+        
+        # Detect turning points
+        turning_points = []
+        
+        if result == "loss":
+            # Find first clearly losing position (score <= -150)
+            losing_idx = None
+            for i, ev in enumerate(evaluations):
+                if ev["score_cp"] <= -150:
+                    losing_idx = i
+                    break
+            
+            if losing_idx is not None and losing_idx > 0:
+                # Walk backward to find last move where score was >= -25
+                for i in range(losing_idx - 1, -1, -1):
+                    if evaluations[i]["score_cp"] >= -25:
+                        # This is the root-cause turning point
+                        turning_points.append({
+                            "ply": evaluations[i]["ply"],
+                            "fen": evaluations[i]["fen"],
+                            "move_uci": evaluations[i]["move_uci"],
+                            "score_before": evaluations[i]["score_cp"],
+                            "score_after": evaluations[i + 1]["score_cp"] if i + 1 < len(evaluations) else evaluations[i]["score_cp"],
+                            "type": "root_cause_loss",
+                            "severity": abs(evaluations[i]["score_cp"]) + abs(evaluations[i + 1]["score_cp"] if i + 1 < len(evaluations) else 0),
+                        })
+                        break
+            
+            # Also detect any sharp drops (< -40 cp)
+            for i in range(len(evaluations) - 1):
+                drop = evaluations[i + 1]["score_cp"] - evaluations[i]["score_cp"]
+                if drop <= -40:
+                    turning_points.append({
+                        "ply": evaluations[i]["ply"],
+                        "fen": evaluations[i]["fen"],
+                        "move_uci": evaluations[i]["move_uci"],
+                        "score_before": evaluations[i]["score_cp"],
+                        "score_after": evaluations[i + 1]["score_cp"],
+                        "type": "sharp_drop",
+                        "severity": abs(drop),
+                    })
+        
+        elif result == "draw":
+            # Find if Duckish held >= +80 cp and slipped to <= +20 cp
+            had_advantage = False
+            slipped_idx = None
+            for i, ev in enumerate(evaluations):
+                if ev["score_cp"] >= 80:
+                    had_advantage = True
+                if had_advantage and ev["score_cp"] <= 20:
+                    slipped_idx = i
+                    break
+            
+            if slipped_idx is not None and slipped_idx > 0:
+                # Find where advantage slipped below +50
+                for i in range(slipped_idx - 1, -1, -1):
+                    if evaluations[i]["score_cp"] >= 50:
+                        turning_points.append({
+                            "ply": evaluations[i]["ply"],
+                            "fen": evaluations[i]["fen"],
+                            "move_uci": evaluations[i]["move_uci"],
+                            "score_before": evaluations[i]["score_cp"],
+                            "score_after": evaluations[i + 1]["score_cp"] if i + 1 < len(evaluations) else evaluations[i]["score_cp"],
+                            "type": "missed_win",
+                            "severity": abs(evaluations[i]["score_cp"]) + 50,
+                        })
+                        break
+        
+        # Deduplicate turning points (keep highest severity per ply)
+        seen_plies = set()
+        unique_turning_points = []
+        for tp in sorted(turning_points, key=lambda x: x["severity"], reverse=True):
+            if tp["ply"] not in seen_plies:
+                seen_plies.add(tp["ply"])
+                unique_turning_points.append(tp)
+        
+        # Apply penalties and bonuses
+        penalized = 0
+        boosted = 0
+        
+        for tp in unique_turning_points[:5]:  # Max 5 turning points per game
+            # Re-search with MultiPV 3 at 1500ms to find true best move
+            try:
+                multipv = engine.best_moves_multipv([m for m in moves_uci[:tp["ply"]]], movetime=1500, multipv=3)
+                if multipv and len(multipv) >= 2:
+                    best_move = multipv[0]["uci"]
+                    best_score = multipv[0]["score_cp"]
+                    
+                    # Calculate graduated penalty (35-100 cp based on severity and result)
+                    if result == "loss":
+                        base_penalty = min(100, 35 + tp["severity"] // 2)
+                    else:  # draw
+                        base_penalty = min(60, 25 + tp["severity"] // 3)
+                    
+                    # Record penalty on the move Duckish played
+                    self.record_move(tp["fen"], tp["move_uci"], penalty_cp=float(base_penalty), bonus_cp=0.0)
+                    penalized += 1
+                    
+                    # Record bonus on the best move found
+                    bonus = 15.0 if result == "loss" else 25.0
+                    if tp["move_uci"] != best_move:
+                        self.record_move(tp["fen"], best_move, penalty_cp=0.0, bonus_cp=bonus)
+                        boosted += 1
+                    
+                    # Also record the position with the game result
+                    self.record_position(tp["fen"], float(best_score), result)
+                    
+                    log(f"[Experience] Turning point at ply {tp['ply']}: played {tp['move_uci']} (score {tp['score_before']}), best was {best_move} (score {best_score}) | Penalty -{base_penalty}cp, Bonus +{bonus}cp")
+            except Exception as e:
+                log(f"[Experience] Failed to analyze turning point at ply {tp['ply']}: {e}")
+        
+        # Record final position
+        if evaluations:
+            final_fen = evaluations[-1]["fen"]
+            self.record_position(final_fen, None, result)
+        
+        # Get total lessons count
+        total_lessons = 0
+        try:
+            with self._lock:
+                cur = self._get_cursor()
+                cur.execute("SELECT COUNT(*) FROM move_experience WHERE penalty_cp > 0 OR bonus_cp > 0")
+                total_lessons = cur.fetchone()[0] or 0
+        except Exception:
+            pass
+        
+        return {
+            "turning_points": len(unique_turning_points),
+            "penalized": penalized,
+            "boosted": boosted,
+            "total_lessons": total_lessons,
+            "skipped": False,
+        }
+
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
