@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 Dashboard HTTP server for the Duckish Lichess bot.
-Pure stdlib (json, threading, http.server, typing).
+Pure stdlib (json, os, sqlite3, threading, http.server, typing).
 """
 import json
+import os
+import sqlite3
 import threading
 import http.server
+from urllib.parse import urlparse, parse_qs
 from typing import Any, Dict, Optional
 
-from .config import DASHBOARD_HOST, DASHBOARD_PORT
+from .config import DASHBOARD_HOST, DASHBOARD_PORT, REPO_ROOT
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
@@ -34,6 +37,86 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/status":
             status = self.bot_ref.get_dashboard_status()
             self._write_response(200, {"Content-Type": "application/json"}, json.dumps(status).encode("utf-8"))
+        elif self.path == "/experience" or self.path.startswith("/experience?"):
+            self._write_response(200, {"Content-Type": "text/html; charset=utf-8"}, EXPERIENCE_HTML.encode("utf-8"))
+        elif self.path == "/api/experience" or self.path.startswith("/api/experience?"):
+            # Query experience.db and return JSON
+            db_path = os.path.join(REPO_ROOT, "bridge", "experience.db")
+            if not os.path.isfile(db_path):
+                self._write_response(200, {"Content-Type": "application/json"}, json.dumps({"summary": {}, "lessons": []}).encode("utf-8"))
+                return
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            filter_type = params.get("filter", ["all"])[0]
+            try:
+                limit = int(params.get("limit", ["100"])[0])
+            except (TypeError, ValueError):
+                limit = 100
+            limit = max(1, min(100000, limit))
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+
+            try:
+                # Summary
+                pos = conn.execute("SELECT COUNT(*), SUM(visits), SUM(win_count), SUM(loss_count), SUM(draw_count) FROM positions").fetchone()
+                mistakes = conn.execute("SELECT COUNT(*) FROM move_experience WHERE penalty_cp > 0").fetchone()[0]
+                boosts = conn.execute("SELECT COUNT(*) FROM move_experience WHERE bonus_cp > 0").fetchone()[0]
+
+                # Lessons
+                query = "SELECT p.fen, p.visits, p.win_count, p.loss_count, p.draw_count, p.deep_score_cp, m.move_uci, m.penalty_cp, m.bonus_cp, m.visits as move_visits FROM positions p LEFT JOIN move_experience m ON p.fen = m.fen"
+                if filter_type == "penalties":
+                    query += " WHERE m.penalty_cp > 0"
+                elif filter_type == "bonuses":
+                    query += " WHERE m.bonus_cp > 0"
+                query += f" LIMIT {limit}"
+
+                rows = conn.execute(query).fetchall()
+            finally:
+                conn.close()
+
+            lessons = []
+            for row in rows:
+                fen = row["fen"]
+                turn = "White" if " w " in f" {fen} " else "Black"
+                explanation = ""
+                penalty_cp = row["penalty_cp"]
+                bonus_cp = row["bonus_cp"]
+                if penalty_cp and penalty_cp > 0:
+                    explanation = f"Penalized -{penalty_cp:.0f} cp after blunder"
+                elif bonus_cp and bonus_cp > 0:
+                    explanation = f"Boosted +{bonus_cp:.0f} cp as stronger alternative"
+                lessons.append({
+                    "fen": fen,
+                    "turn": turn,
+                    "visits": row["visits"],
+                    "wins": row["win_count"],
+                    "draws": row["draw_count"],
+                    "losses": row["loss_count"],
+                    "deep_score_cp": row["deep_score_cp"],
+                    "moves": [{
+                        "move_uci": row["move_uci"],
+                        "penalty_cp": row["penalty_cp"],
+                        "bonus_cp": row["bonus_cp"],
+                        "visits": row["move_visits"],
+                        "explanation": explanation,
+                    }] if row["move_uci"] else [],
+                })
+
+            response = {
+                "summary": {
+                    "total_positions": pos[0] or 0,
+                    "total_visits": pos[1] or 0,
+                    "wins": pos[2] or 0,
+                    "losses": pos[3] or 0,
+                    "draws": pos[4] or 0,
+                    "mistakes_penalized": mistakes,
+                    "moves_boosted": boosts,
+                },
+                "lessons": lessons,
+            }
+            self._write_response(200, {"Content-Type": "application/json"}, json.dumps(response).encode("utf-8"))
         else:
             self._write_response(404, {}, b"")
 
@@ -171,7 +254,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <header>
 <h1>\U0001F986 Duckish Bot Dashboard</h1>
 <div style="display:flex;align-items:center;gap:16px;">
-<a class="watch-btn" href="http://127.0.0.1:5000/experience" target="_blank" rel="noopener">View Experience Book (/experience)</a>
+<a class="watch-btn" href="/experience" target="_blank" rel="noopener">View Experience Book (/experience)</a>
 <span id="statusBadge" class="status-badge status-offline">Offline</span>
 </div>
 </header>
@@ -293,6 +376,256 @@ $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST
 $('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
 $('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
 fetchStatus();setInterval(fetchStatus,1000);
+</script>
+</body>
+</html>
+"""
+
+
+# ---- Experience Book HTML ---------------------------------------------------
+
+EXPERIENCE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Duckish Experience Book</title>
+<style>
+:root { --bg:#0d1117; --panel:#161b22; --panel2:#21262d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --err:#f85149; --border:#30363d; }
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+body{background:var(--bg);color:var(--fg);min-height:100vh;padding:24px}
+h1{font-size:1.3rem;font-weight:600;letter-spacing:-0.02em;margin-bottom:4px}
+.subtitle{color:var(--muted);font-size:0.85rem;margin-bottom:20px}
+.banner{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;max-width:1200px}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+.stat-label{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px}
+.stat-value{font-size:1.5rem;font-weight:700}
+.stat-value.poss{color:var(--accent)}
+.stat-value.mist{color:var(--err)}
+.stat-value.boost{color:var(--ok)}
+.stat-value.wdl{color:var(--fg);font-size:1.15rem}
+.layout{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:20px;max-width:1200px;align-items:start}
+.board-panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;position:sticky;top:16px}
+.board-panel h2{font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:12px}
+.board-wrap{position:relative;width:100%;aspect-ratio:1/1;border:2px solid var(--border);border-radius:6px;overflow:hidden}
+.board-grid{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);width:100%;height:100%}
+.sq{display:flex;align-items:center;justify-content:center;font-size:min(6.2vw,38px);line-height:1;user-select:none}
+.sq.light{background:#ebecd0}
+.sq.dark{background:#779556}
+.sq.white{color:#fff;text-shadow:0 0 2px #000,0 1px 2px rgba(0,0,0,.6)}
+.sq.black{color:#000;text-shadow:0 1px 1px rgba(255,255,255,.3)}
+#arrowLayer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+.board-hint{margin-top:10px;color:var(--muted);font-size:0.75rem;line-height:1.5}
+.board-hint b{color:var(--fg)}
+.legend{margin-top:8px;font-size:0.72rem}
+.legend span{margin-right:12px}
+.legend .red{color:var(--err)}
+.legend .green{color:var(--ok)}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
+.btn{padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-weight:600;font-size:0.82rem;cursor:pointer;transition:all .15s}
+.btn:hover{border-color:var(--accent)}
+.btn.active{background:var(--accent);color:#0d1117;border-color:var(--accent)}
+#searchBox{flex:1;min-width:180px;padding:8px 12px;border:1px solid var(--border);background:var(--panel);color:var(--fg);border-radius:8px;font-size:0.85rem}
+#searchBox:focus{outline:none;border-color:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:0.8rem;background:var(--panel);border-radius:12px;overflow:hidden}
+thead th{text-align:left;padding:10px 12px;background:var(--panel2);color:var(--muted);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+tbody tr{cursor:pointer;transition:background .12s}
+tbody tr:hover{background:var(--panel2)}
+tbody td.fen{font-family:ui-monospace,monospace;font-size:0.72rem;color:var(--muted);max-width:220px;overflow-wrap:anywhere}
+td.pen{color:var(--err);font-weight:600}
+td.bon{color:var(--ok);font-weight:600}
+.empty{text-align:center;color:var(--muted);padding:24px}
+.table-scroll{overflow-x:auto}
+@media (max-width:820px){ .layout{grid-template-columns:1fr} .board-panel{position:static} .sq{font-size:min(9vw,40px)} }
+</style>
+</head>
+<body>
+<h1>\U0001F9E0 Duckish Experience Book</h1>
+<div class="subtitle">Lessons learned from your games. Click any row to view the position and its learned moves.</div>
+<div class="banner">
+<div class="stat"><div class="stat-label">Total Positions Learned</div><div class="stat-value poss" id="sumPositions">0</div></div>
+<div class="stat"><div class="stat-label">Mistakes Penalized</div><div class="stat-value mist" id="sumMistakes">0</div></div>
+<div class="stat"><div class="stat-label">Stronger Moves Boosted</div><div class="stat-value boost" id="sumBoosts">0</div></div>
+<div class="stat"><div class="stat-label">Record (W / D / L)</div><div class="stat-value wdl" id="sumWDL">0 / 0 / 0</div></div>
+</div>
+<div class="layout">
+<div class="board-panel">
+<h2>Position Viewer</h2>
+<div class="board-wrap">
+<div class="board-grid" id="boardGrid"></div>
+<svg id="arrowLayer" viewBox="0 0 8 8" preserveAspectRatio="none"></svg>
+</div>
+<div class="legend"><span class="red">\u25CF Penalized move</span><span class="green">\u25CF Boosted move</span></div>
+<div class="board-hint" id="boardHint">Select a lesson from the table to view it here.</div>
+</div>
+<div class="table-scroll">
+<div class="controls">
+<button class="btn active" data-filter="all">All Lessons</button>
+<button class="btn" data-filter="penalties">Mistakes Penalized</button>
+<button class="btn" data-filter="bonuses">Boosted Moves</button>
+<input type="text" id="searchBox" placeholder="Search FEN or move (e.g. e2e4)...">
+</div>
+<table>
+<thead><tr>
+<th>FEN</th><th>Turn</th><th>Visits</th><th>W/D/L</th><th>Move</th><th>Pen</th><th>Bonus</th><th>Explanation</th>
+</tr></thead>
+<tbody id="lessonsBody"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const FILES = 'abcdefgh';
+const PIECES = {
+  'P':'\\u2659','N':'\\u2658','B':'\\u2657','R':'\\u2656','Q':'\\u2655','K':'\\u2654',
+  'p':'\\u265F','n':'\\u265E','b':'\\u265D','r':'\\u265C','q':'\\u265B','k':'\\u265A'
+};
+let allLessons = [];
+let currentFilter = 'all';
+
+function parseFen(fen){
+  const placement = (fen || '').split(' ')[0];
+  const rows = placement.split('/');
+  const board = {};
+  for(let i=0;i<8;i++){
+    const rank = 8 - i;
+    let file = 0;
+    for(const ch of (rows[i]||'')){
+      if(ch >= '1' && ch <= '8'){ file += parseInt(ch,10); }
+      else { board[FILES[file] + rank] = ch; file++; }
+    }
+  }
+  return board;
+}
+
+function renderBoard(fen){
+  const board = parseFen(fen);
+  const grid = document.getElementById('boardGrid');
+  grid.innerHTML = '';
+  for(let r=8;r>=1;r--){
+    for(let f=0;f<8;f++){
+      const sq = FILES[f] + r;
+      const cell = document.createElement('div');
+      const isLight = ((f + r) % 2 === 0);
+      cell.className = 'sq ' + (isLight ? 'light' : 'dark');
+      const p = board[sq];
+      if(p){
+        cell.textContent = PIECES[p] || '';
+        cell.className += (p === p.toUpperCase()) ? ' white' : ' black';
+      }
+      grid.appendChild(cell);
+    }
+  }
+}
+
+function center(sq){
+  const f = FILES.indexOf(sq[0]);
+  const r = parseInt(sq[1],10);
+  return [f + 0.5, 8.5 - r];
+}
+
+function drawArrows(moves){
+  const svg = document.getElementById('arrowLayer');
+  svg.innerHTML = '<defs>'
+    + '<marker id="ahRed" markerWidth="0.55" markerHeight="0.55" refX="0.45" refY="0.275" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0.55,0.275 L0,0.55 z" fill="#f85149"/></marker>'
+    + '<marker id="ahGreen" markerWidth="0.55" markerHeight="0.55" refX="0.45" refY="0.275" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0.55,0.275 L0,0.55 z" fill="#3fb950"/></marker>'
+    + '</defs>';
+  (moves || []).forEach(function(m){
+    const uci = m.move_uci || '';
+    if(uci.length < 4) return;
+    const fromSq = uci.slice(0,2);
+    const toSq = uci.slice(2,4);
+    const a = center(fromSq);
+    const b = center(toSq);
+    let color, marker;
+    if(m.penalty_cp && m.penalty_cp > 0){ color = '#f85149'; marker = 'url(#ahRed)'; }
+    else if(m.bonus_cp && m.bonus_cp > 0){ color = '#3fb950'; marker = 'url(#ahGreen)'; }
+    else return;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', a[0]); line.setAttribute('y1', a[1]);
+    line.setAttribute('x2', b[0]); line.setAttribute('y2', b[1]);
+    line.setAttribute('stroke', color);
+    line.setAttribute('stroke-width', '0.14');
+    line.setAttribute('stroke-linecap', 'round');
+    line.setAttribute('marker-end', marker);
+    svg.appendChild(line);
+  });
+}
+
+function fmt(cp){ return (cp === null || cp === undefined) ? '-' : Number(cp).toFixed(0); }
+
+function renderLessons(){
+  const q = (document.getElementById('searchBox').value || '').toLowerCase().trim();
+  const filtered = allLessons.filter(function(l){
+    if(!q) return true;
+    const hay = (l.fen + ' ' + (l.moves || []).map(function(m){return m.move_uci;}).join(' ')).toLowerCase();
+    return hay.indexOf(q) !== -1;
+  });
+  const tbody = document.getElementById('lessonsBody');
+  if(!filtered.length){
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No lessons found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(function(l){
+    const m = (l.moves && l.moves[0]) || {};
+    return '<tr>'
+      + '<td class="fen">' + l.fen + '</td>'
+      + '<td>' + l.turn + '</td>'
+      + '<td>' + (l.visits || 0) + '</td>'
+      + '<td>' + (l.wins||0) + '/' + (l.draws||0) + '/' + (l.losses||0) + '</td>'
+      + '<td>' + (m.move_uci || '-') + '</td>'
+      + '<td class="pen">' + (m.penalty_cp ? fmt(m.penalty_cp) : '-') + '</td>'
+      + '<td class="bon">' + (m.bonus_cp ? fmt(m.bonus_cp) : '-') + '</td>'
+      + '<td>' + (m.explanation || '-') + '</td>'
+      + '</tr>';
+  }).join('');
+  const rows = tbody.querySelectorAll('tr');
+  filtered.forEach(function(l, i){
+    rows[i].onclick = function(){
+      renderBoard(l.fen);
+      drawArrows(l.moves);
+      const hint = document.getElementById('boardHint');
+      const m = (l.moves && l.moves[0]) || {};
+      hint.innerHTML = '<b>' + l.fen + '</b><br>Turn: ' + l.turn
+        + ' | Visits: ' + (l.visits||0)
+        + ' | Move: ' + (m.move_uci||'-')
+        + (m.explanation ? '<br>' + m.explanation : '');
+    };
+  });
+}
+
+async function load(filter){
+  currentFilter = filter || 'all';
+  try{
+    const r = await fetch('/api/experience?filter=' + currentFilter + '&limit=100');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const s = d.summary || {};
+    document.getElementById('sumPositions').textContent = s.total_positions || 0;
+    document.getElementById('sumMistakes').textContent = s.mistakes_penalized || 0;
+    document.getElementById('sumBoosts').textContent = s.moves_boosted || 0;
+    document.getElementById('sumWDL').textContent = (s.wins||0) + ' / ' + (s.draws||0) + ' / ' + (s.losses||0);
+    allLessons = d.lessons || [];
+    renderLessons();
+    if(allLessons.length){
+      renderBoard(allLessons[0].fen);
+      drawArrows(allLessons[0].moves);
+    }
+  }catch(e){
+    document.getElementById('lessonsBody').innerHTML = '<tr><td colspan="8" class="empty">Failed to load: ' + (e && e.message ? e.message : e) + '</td></tr>';
+  }
+}
+
+document.querySelectorAll('.btn[data-filter]').forEach(function(btn){
+  btn.onclick = function(){
+    document.querySelectorAll('.btn[data-filter]').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    load(btn.getAttribute('data-filter'));
+  };
+});
+document.getElementById('searchBox').addEventListener('input', renderLessons);
+load('all');
 </script>
 </body>
 </html>
