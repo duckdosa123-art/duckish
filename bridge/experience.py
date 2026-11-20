@@ -299,6 +299,12 @@ class ExperienceStore:
                 try:
                     multipv = engine.best_moves_multipv([m for m in moves_uci[:i]], movetime=1200, multipv=1)
                     score_cp = multipv[0]["score_cp"] if multipv else 0
+                    # Normalize score to Duckish's perspective
+                    # UCI scores are from side-to-move's perspective
+                    # If it's NOT Duckish's turn, negate
+                    is_duckish_turn = (i % 2 == 0) if duckish_color == "white" else (i % 2 == 1)
+                    if not is_duckish_turn:
+                        score_cp = -score_cp
                     best_uci = multipv[0]["uci"] if multipv else uci
                 except Exception:
                     score_cp = 0

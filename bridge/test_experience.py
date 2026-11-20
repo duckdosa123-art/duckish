@@ -362,23 +362,26 @@ def test_san_whitespace_normalization():
         print(f"PASS: normalization {raw} -> {normalized}")
 
 class MockEngine:
-    """Scripted engine for tests. Returns per-position scores keyed by len(moves_uci)."""
-
-    def __init__(self, scores, best_uci="e2e4"):
-        self.scores = scores  # dict: len(moves_uci) -> score_cp
-        self.best_uci = best_uci
-
+    def __init__(self, scripted_scores=None, duckish_color="white"):
+        self.scripted_scores = scripted_scores or {}
+        self.duckish_color = duckish_color
+    
     def best_moves_multipv(self, moves_uci, movetime=1500, multipv=3):
-        score = self.scores.get(len(moves_uci), 0)
-        results = [{"uci": self.best_uci, "score_cp": score, "rank": 1}]
-        if multipv >= 2:
-            results.append({"uci": "d2d4", "score_cp": score - 30, "rank": 2})
-        if multipv >= 3:
-            results.append({"uci": "c2c4", "score_cp": score - 60, "rank": 3})
-        return results
-
+        idx = len(moves_uci)  # ply number
+        # Get score from Duckish's perspective (from dict)
+        duckish_score = self.scripted_scores.get(idx, 0)
+        # Convert to side-to-move's perspective (negate if opponent's turn)
+        is_duckish_turn = (idx % 2 == 0) if self.duckish_color == "white" else (idx % 2 == 1)
+        score = duckish_score if is_duckish_turn else -duckish_score
+        # Return 3 results (needed for penalty recording)
+        return [
+            {"uci": "e2e4", "score_cp": score, "rank": 1},
+            {"uci": "d2d4", "score_cp": score - 10, "rank": 2},
+            {"uci": "g1f3", "score_cp": score - 20, "rank": 3},
+        ]
+    
     def best_move(self, moves_uci, **kwargs):
-        return self.best_uci
+        return "e2e4"
 
 
 def _knight_shuffle_moves(n):
@@ -409,7 +412,7 @@ def test_slow_drift_loss():
             14: -80, 15: -95, 16: -110, 17: -125, 18: -140, 19: -155,
         }
         moves = _knight_shuffle_moves(20)
-        engine = MockEngine(scores, best_uci="e2e4")
+        engine = MockEngine(scripted_scores=scores, duckish_color="white")
 
         summary = store.record_game("driftloss", moves, "loss", engine)
 
@@ -456,7 +459,7 @@ def test_missed_win_draw():
 
         scores = {8: 120, 9: 110, 10: 95, 11: 60, 12: 30, 13: 10}
         moves = _knight_shuffle_moves(16)
-        engine = MockEngine(scores, best_uci="e2e4")
+        engine = MockEngine(scripted_scores=scores, duckish_color="white")
 
         summary = store.record_game("missedwin", moves, "draw", engine)
 
@@ -497,7 +500,7 @@ def test_game_completion_triggers_training():
 
         scores = {8: 40, 9: 10, 10: -30, 11: -160}
         moves = _knight_shuffle_moves(12)
-        engine = MockEngine(scores, best_uci="e2e4")
+        engine = MockEngine(scripted_scores=scores, duckish_color="white")
 
         summary = store.record_game("training", moves, "loss", engine)
 
