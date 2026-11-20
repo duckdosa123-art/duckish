@@ -191,29 +191,71 @@ class GameHandler:
         my_winc = self.winc if self.color == "white" else None
         my_binc = self.binc if self.color == "black" else None
 
-        # Check experience book for learned adjustments at this position
+        # Calculate dynamic movetime based on our remaining time
+        our_time = self.wtime if self.color == "white" else self.btime
+        our_inc = self.winc if self.color == "white" else self.binc
+        if our_time and our_time > 0:
+            inc = our_inc if our_inc and our_inc > 0 else 0
+            movetime = max(150, min(int(our_time // 22 + inc * 0.8), int(our_time * 0.15)))
+        else:
+            movetime = 1000
+
+        # Opening repertoire: soft bonus for preferred openings (first 8 plies only)
+        opening_bonus = {}
+        if len(self.moves_uci) < 8:
+            if self.color == "white":
+                # As White: prefer 1. Nf3, 2. c4/d4/g3
+                if len(self.moves_uci) == 0:
+                    opening_bonus = {"g1f3": 25}  # 1. Nf3
+                elif len(self.moves_uci) == 2:
+                    opening_bonus = {"c2c4": 20, "d2d4": 15, "g2g3": 15}  # 2. c4/d4/g3
+                elif len(self.moves_uci) == 4:
+                    opening_bonus = {"f1g2": 15, "d2d4": 10}  # 3. Bg2/d4
+            else:
+                # As Black: Sicilian against e4, Nf6 against d4/c4
+                if len(self.moves_uci) == 1:
+                    first_move = self.moves_uci[0] if self.moves_uci else ""
+                    if first_move == "e2e4":
+                        opening_bonus = {"c7c5": 25, "e7e5": 15}  # 1... c5/e5
+                    elif first_move in ("d2d4", "c2c4"):
+                        opening_bonus = {"g8f6": 25}  # 1... Nf6
+
+        # Get MultiPV candidates, apply experience adjustments and opening bonus
         try:
             current_fen = self._board().fen()
-            # Get MultiPV candidates with experience adjustments
             multipv = self.engine.best_moves_multipv(self.moves_uci, movetime=1000, multipv=3)
             if multipv:
                 adjusted = self.experience.apply_adjustments(current_fen, multipv)
                 if adjusted:
+                    # Apply opening bonus (only if within 30cp of top move)
+                    top_score = adjusted[0].get("adjusted_score_cp", 0)
+                    for move in adjusted:
+                        uci = move.get("uci", "")
+                        if uci in opening_bonus and move.get("adjusted_score_cp", 0) >= top_score - 30:
+                            move["adjusted_score_cp"] = move.get("adjusted_score_cp", 0) + opening_bonus[uci]
+                            move["learned"] = True
+                    # Re-sort by adjusted score
+                    adjusted.sort(key=lambda x: x.get("adjusted_score_cp", -999999), reverse=True)
+                    for i, m in enumerate(adjusted):
+                        m["rank"] = i + 1
                     bestmove = adjusted[0].get("uci", "")
-                    # Log if experience affected the choice
                     if adjusted[0].get("learned"):
-                        print(f"[Game {self.game_id}] Experience adjusted move: {bestmove}", flush=True)
+                        print(f"[Game {self.game_id}] Opening preference: {bestmove}", flush=True)
                 else:
                     bestmove = multipv[0]["uci"]
             else:
-                bestmove = self.engine.best_move(self.moves_uci)
+                bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
         except Exception:
-            bestmove = self.engine.best_move(self.moves_uci)
+            bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
             try:
                 result = self.client.make_move(self.game_id, bestmove)
+                if isinstance(result, dict) and result.get("error"):
+                    print(f"[Game {self.game_id}] Move failed: {result['error']}", flush=True)
+                    self._running = False
+                    return
                 board = self._board()
                 try:
                     move = chess.Move.from_uci(bestmove)
@@ -637,8 +679,12 @@ class LichessBot:
     def _auto_match_next(self) -> None:
         if not self._auto_match_active:
             return
+        # Don't start a new game if one is already in progress
         if self._current_game_id:
             return  # Wait for current game to finish
+        # Also check if any game handlers are still running
+        if self.games:
+            return  # Games still in progress
 
         try:
             self._set_phase("FETCHING", "Fetching online bots from Lichess...")

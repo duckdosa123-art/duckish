@@ -6,6 +6,7 @@ Pure stdlib (json, socket, urllib, typing).
 import json
 import socket
 import urllib.request
+import urllib.error
 
 import requests
 
@@ -86,8 +87,14 @@ class LichessClient:
         return json.loads(resp.read().decode("utf-8"))
 
     def make_move(self, game_id: str, move_uci: str) -> Dict[str, Any]:
-        resp = self._request("POST", f"/bot/game/{game_id}/move/{move_uci}")
-        return json.loads(resp.read().decode("utf-8"))
+        try:
+            resp = self._request("POST", f"/bot/game/{game_id}/move/{move_uci}")
+            return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            return {"error": f"HTTP {e.code}: {body}"}
+        except Exception as e:
+            return {"error": str(e)}
 
     def challenge_user(
         self,
