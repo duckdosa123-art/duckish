@@ -216,6 +216,8 @@ class MockEngine:
         btime: Optional[int] = None,
         winc: Optional[int] = None,
         binc: Optional[int] = None,
+        movetime: Optional[int] = None,
+        **kwargs: Any,
     ) -> Optional[str]:
         self.calls.append(
             {
@@ -307,8 +309,14 @@ def main() -> int:
 
         def test_event_stream() -> None:
             resp = client.stream_events()
-            first_line = resp.readline().decode("utf-8").strip()
-            resp.close()
+            first_line = ""
+            try:
+                for raw in resp.iter_lines():
+                    if raw:
+                        first_line = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                        break
+            finally:
+                resp.close()
             first_event = json.loads(first_line) if first_line else {}
             check(
                 "event stream: GET /api/stream/event yields NDJSON event",
@@ -375,15 +383,32 @@ def main() -> int:
                     f"got {third}",
                 )
                 ours_only = all(
-                    c["btime"] is None
-                    and c["binc"] is None
-                    and c["wtime"] is not None
+                    c["wtime"] is not None
+                    and c["btime"] is not None
                     and c["winc"] is not None
+                    and c["binc"] is not None
                     for c in calls
                 )
                 check(
-                    "engine: called with only our side's clock (white)",
+                    "engine: called with both clocks and increments (white)",
                     ours_only,
+                    f"calls={calls}",
+                )
+                # Both clocks must be forwarded with standard UCI semantics:
+                # gameFull starts at 180000/180000 +2000, then the runner keeps
+                # each side's clock in sync with the Lichess state events.
+                expected_clocks = [
+                    (180000, 180000, 2000, 2000),  # gameFull (moves: "")
+                    (179000, 179500, 2000, 2000),  # gameState after 2 moves
+                    (178000, 178500, 2000, 2000),  # gameState after 4 moves
+                ]
+                clocks_ok = len(calls) == len(expected_clocks) and all(
+                    (c["wtime"], c["btime"], c["winc"], c["binc"]) == exp
+                    for c, exp in zip(calls, expected_clocks)
+                )
+                check(
+                    "engine: both clocks match Lichess state events (white)",
+                    clocks_ok,
                     f"calls={calls}",
                 )
 
