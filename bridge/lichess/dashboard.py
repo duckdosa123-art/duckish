@@ -143,6 +143,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     self._write_response(400, {"Content-Type": "application/json"}, b'{"error":"username required"}')
             except Exception as e:
                 self._write_response(400, {"Content-Type": "application/json"}, json.dumps({"error": str(e)}).encode("utf-8"))
+        elif self.path == "/api/toggle-challenges":
+            self.bot_ref._accept_challenges = not self.bot_ref._accept_challenges
+            self._write_response(200, {"Content-Type": "application/json"}, json.dumps({"ok": True, "accept_challenges": self.bot_ref._accept_challenges}).encode("utf-8"))
         else:
             self._write_response(404, {}, b"")
 
@@ -294,6 +297,10 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <input type="checkbox" id="toggleRated" checked>
 <label for="toggleRated">Rated</label>
 </div>
+<div class="control-group toggle">
+<input type="checkbox" id="toggleChallenges" checked>
+<label for="toggleChallenges">Accept Challenges</label>
+</div>
 </div>
 <div class="manual-challenge">
 <input type="text" id="manualUser" placeholder="Username to challenge...">
@@ -332,6 +339,7 @@ $('#perfBook').textContent=d.perf_book_loaded?'Loaded':'Missing';
 $('#expBook').textContent=d.exp_book_loaded?'Loaded':'Missing';
 $('#btnStart').disabled=autoMatch;$('#btnStop').disabled=!autoMatch;
 autoMatchActive=autoMatch;
+$('#toggleChallenges').checked = d.accept_challenges !== false;
 const g=d.active_game;
 if(g){
 $('#activeGame').innerHTML=`
@@ -377,6 +385,10 @@ $('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST'});
 $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST'});log('Auto-match stopped','log-warn');fetchStatus();};
 $('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
 $('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
+$('#toggleChallenges').onchange = async () => {
+  await fetch('/api/toggle-challenges', {method: 'POST'});
+  fetchStatus();
+};
 fetchStatus();setInterval(fetchStatus,1000);
 </script>
 </body>

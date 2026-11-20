@@ -78,6 +78,7 @@ class BotState:
         self.target_bot: Optional[str] = None
         self.challenge_id: Optional[str] = None
         self.active_game_url: Optional[str] = None
+        self.accept_challenges: bool = True
         self.logs: List[Dict[str, Any]] = []
 
     def log(self, msg: str) -> None:

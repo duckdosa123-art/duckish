@@ -426,6 +426,7 @@ class LichessBot:
         self._session_draws = 0
         self._auto_match_active = False
         self._auto_match_rated = True
+        self._accept_challenges = True
         self._auto_match_thread: Optional[threading.Thread] = None
         self._current_game_id: Optional[str] = None
         self._current_game_info: Optional[Dict[str, Any]] = None
@@ -555,6 +556,14 @@ class LichessBot:
         challenger_id = challenge.get("challenger", {}).get("id", "").lower()
         our_username = self._username.lower() if self._username else ""
         if our_username and challenger_id == our_username:
+            return
+
+        if not self._accept_challenges:
+            self._log_event(f"  -> Declining: challenges disabled")
+            try:
+                self.client.decline_challenge(challenge.get("id"), "generic")
+            except Exception:
+                pass
             return
 
         challenge_id = challenge.get("id")
@@ -736,6 +745,7 @@ class LichessBot:
             "phase": state_copy["phase"],
             "detail": state_copy["detail"],
             "auto_match": self._auto_match_active,
+            "accept_challenges": self._accept_challenges,
             "logs": state_copy["logs"],
             "username": self._username,
             "blitz_rating": self._blitz_rating,
