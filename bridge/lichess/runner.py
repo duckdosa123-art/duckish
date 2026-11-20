@@ -848,6 +848,7 @@ class LichessBot:
             "session_draws": self._session_draws,
             "perf_book_loaded": self._perf_book_loaded,
             "exp_book_loaded": self._exp_book_loaded,
+            "tb_loaded": self.engine.tb_loaded(),
             "active_game": active_game,
             "challenge_log": self._challenge_log[-20:],  # Last 20 entries
             "state": state_copy,

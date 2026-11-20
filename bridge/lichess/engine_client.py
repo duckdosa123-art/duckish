@@ -45,6 +45,7 @@ class Engine:
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
         self._alive = False
         self._book_loaded = False
+        self._tb_loaded = False
         self._hash_mb = hash_mb
         self._threads = threads
         self._last_error: Optional[str] = None
@@ -98,6 +99,11 @@ class Engine:
                 has_tb = False
             if has_tb:
                 self._send(f"setoption name SyzygyPath value {SYZYGY_PATH}")
+                self._tb_loaded = True
+            else:
+                self._tb_loaded = False
+        else:
+            self._tb_loaded = False
 
     def _drain_stderr(self, proc) -> None:
         try:
@@ -332,6 +338,9 @@ class Engine:
                 raise
         return results
 
+    def tb_loaded(self) -> bool:
+        return self._tb_loaded
+
     def health(self) -> Dict[str, Any]:
         alive = self.proc is not None and self.proc.poll() is None
         return {
@@ -340,6 +349,7 @@ class Engine:
             "pid": self.proc.pid if self.proc else None,
             "alive": alive,
             "book_loaded": self._book_loaded,
+            "tb_loaded": self._tb_loaded,
             "threads": self._threads,
             "hash_mb": self._hash_mb,
             "last_error": self._last_error,

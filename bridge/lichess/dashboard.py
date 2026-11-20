@@ -298,6 +298,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <div class="stat-row"><span class="stat-label">Session W/L/D</span><span class="stat-value" id="sessionRecord">0/0/0</span></div>
 <div class="stat-row"><span class="stat-label">Performance.bin</span><span class="stat-value" id="perfBook">-</span></div>
 <div class="stat-row"><span class="stat-label">Experience Book</span><span class="stat-value" id="expBook">-</span></div>
+<div class="stat-row"><span class="stat-label">Tablebases</span><span class="stat-value" id="tbStatus">-</span></div>
 </div>
 </div>
 <div class="card game-card">
@@ -388,6 +389,7 @@ $('#rapidRating').innerHTML=d.rapid_rating?`${d.rapid_rating}<span class="rating
 $('#sessionRecord').textContent=`${d.session_wins||0}/${d.session_losses||0}/${d.session_draws||0}`;
 $('#perfBook').textContent=d.perf_book_loaded?'Loaded':'Missing';
 $('#expBook').textContent=d.exp_book_loaded?'Loaded':'Missing';
+$('#tbStatus').textContent=d.tb_loaded ? 'Loaded' : 'Missing';
 $('#btnStart').disabled=autoMatch;$('#btnStop').disabled=!autoMatch;
 autoMatchActive=autoMatch;
 $('#toggleChallenges').checked = d.accept_challenges !== false;
