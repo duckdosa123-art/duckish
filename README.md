@@ -57,13 +57,24 @@ Optional flags: `--movetime <ms>` (default 400) and `--threads <n>` (default: ha
 
 Also available via the `GET /api/experience` JSON API.
 
+### Self-training from Lichess games
+
+- The bot **auto-trains on every finished loss/draw from Lichess** (games with 8+ moves), in a background thread.
+- **Root-Cause Trajectory Self-Training Algorithm:** runs a post-mortem audit (~1200ms per critical position), reconstructs the evaluation trajectory from Duckish's perspective (with score normalization for opponent turns), and detects:
+  - Sharp single-move drops (< -40cp).
+  - Root-cause inflection points in losses (strategic slow-drift where no single move looked like a blunder).
+  - Missed-win inflection points in draws (a +80cp advantage slipping below +50cp).
+- For each turning point, it re-searches with **MultiPV 3 (1500ms)** to find the true best move, applies a **graduated penalty (35-100cp)** to the played move and a bonus to the better move - but **never penalizes the engine's own best move**.
+- Proof logs appear in both stdout and the dashboard Live Activity Console: `[Experience] Audited Lichess game <id> (<result>): found <K> turning points | ...`
+- Experience learned in live games feeds back into the analyzer (bridge/server.py applies adjustments for display), and vice versa.
+
 ## 5. Official Lichess BOT Runner & Live Control Dashboard
 
 A modular `bridge/lichess/` package:
 
 - `config.py` - token loading (env / `.env`), paths, `BotState`.
 - `api.py` - Lichess HTTP client (urllib / requests).
-- `engine_client.py` - persistent UCI engine wrapper (movetime-capped search).
+- `engine_client.py` - persistent UCI engine wrapper (single-PV fast search, generous read deadline, hash persistence across moves with no `ucinewgame` mid-game; MultiPV 3 available for experience analysis).
 - `runner.py` - event stream, challenge handling, game loop, auto-match with cooldowns.
 - `dashboard.py` - live control dashboard (dark mode, auto-match controls, activity console).
 - `bridge/lichess_bot.py` - CLI entry point.
@@ -81,10 +92,18 @@ Dashboard at `http://127.0.0.1:5001` with:
 
 - Online status badge and live phase/detail.
 - Start/Stop Auto-Match (fetches up to 30 online bots; cooldowns for rate-limited or declined opponents).
+- "Accept Challenges" toggle checkbox - control when the bot receives/accepts incoming challenges (declines them when off).
 - Manual challenge input.
 - Live activity console (last 50 events).
 - Watch Live on Lichess link.
 - View Experience Book link.
+
+### Play strength & openings
+
+- The bot uses the **same engine binary and NNUE as the analyzer** (`target/release/duckish.exe`) - identical network weights. Only the bridge settings differ.
+- The bot plays the engine's **raw best move** (single-PV search), keeping Lazy SMP fully active for maximum strength - the same move the analyzer's arrow shows.
+- Search uses a short fixed **1000 ms movetime** (matching the analyzer's fast analysis) - no broken clock math.
+- **Opening repertoire as a tight tiebreak:** Reti/Zukertort as White (1.Nf3, 2.c4/g3, 3.Bg2, 4.O-O) and Indian defenses as Black (1...Nf6 vs d4/c4/Nf3, 1...c5/e5/e6 vs e4), plus castling preference. Preferred moves are only chosen when within **20cp** of the engine's top choice - never override a clearly better move.
 
 Token loading priority: `--token` > `LICHESS_TOKEN` env var > `.env` file.
 
