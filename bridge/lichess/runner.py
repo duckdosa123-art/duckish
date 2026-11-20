@@ -154,10 +154,10 @@ class GameHandler:
             self.btime = event.get("btime", self.btime)
             if self._is_our_turn():
                 self._make_move()
-            # Check if game is over (gameState includes status when game ends)
+            # Check if game is over (only real game-ending statuses, NOT "started")
             status = event.get("status")
-            if status:
-                # Game is over - synthesize a gameFinish event
+            GAME_END_STATUSES = {"mate", "resign", "draw", "stalemate", "insufficient", "repetition", "fiftymoves", "timeout", "outoftime", "aborted", "cheat", "noStart", "unknownFinish"}
+            if status and status in GAME_END_STATUSES:
                 self._handle_game_finish(event)
         elif typ == "chatLine":
             pass  # ignore chat
@@ -509,6 +509,16 @@ class LichessBot:
             return
 
         challenge_id = challenge.get("id")
+
+        # Decline if already in a game
+        if self._current_game_id:
+            self._log_event(f"  -> Declining: already in game {self._current_game_id}")
+            try:
+                self.client.decline_challenge(challenge_id, "later")
+            except Exception:
+                pass
+            return
+
         variant = challenge.get("variant", {}).get("key", "standard")
         speed = challenge.get("speed", "unknown")
         time_control = challenge.get("timeControl", {})
