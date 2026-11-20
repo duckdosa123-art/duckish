@@ -8,6 +8,10 @@ chunks so memory stays flat; the full 3-4-5 man set is ~938 MB / ~290 files.
 Source: https://tablebase.lichess.ovh/tables/standard/download.txt
 (newline-separated URLs)
 
+The manifest also lists 6-man (~149 GB) and 7-man (~16.7 TB) tablebases.
+Those are deliberately filtered out - see filter_tb_urls() - so only the
+~938 MB 3-4-5 man set (145 WDL + 145 DTZ files) is downloaded.
+
 Usage:
     python bridge/download_syzygy.py
 
@@ -38,8 +42,17 @@ def fetch_manifest():
 
 
 def filter_tb_urls(urls):
-    """Keep only .rtbw (WDL) and .rtbz (DTZ) tablebase files."""
-    return [u for u in urls if u.lower().endswith((".rtbw", ".rtbz"))]
+    """Keep only the 3-4-5 man WDL (.rtbw) and DTZ (.rtbz) files.
+
+    The Lichess manifest also lists 6-man (~149 GB) and 7-man (~16.7 TB)
+    tables - those must be excluded. We only want the ~938 MB 3-4-5 set.
+    """
+    out = []
+    for u in urls:
+        low = u.lower()
+        if ("/3-4-5-wdl/" in low or "/3-4-5-dtz/" in low) and low.endswith((".rtbw", ".rtbz")):
+            out.append(u)
+    return out
 
 
 def download_file(url, dest):
@@ -75,7 +88,12 @@ def main():
 
     print(f"Fetching tablebase manifest: {MANIFEST_URL}")
     try:
-        urls = filter_tb_urls(fetch_manifest())
+        all_urls = fetch_manifest()
+        urls = filter_tb_urls(all_urls)
+        print(
+            f"Manifest has {len(all_urls)} entries; keeping {len(urls)} (3-4-5 man only), "
+            f"excluding {len(all_urls) - len(urls)} 6/7-man entries."
+        )
     except Exception as e:  # noqa: BLE001
         print(f"ERROR: could not fetch manifest: {e}")
         return 1
