@@ -224,25 +224,67 @@ class GameHandler:
         else:
             movetime = 1000
 
-        # Opening repertoire: soft bonus for preferred openings (first 8 plies only)
+        # Opening repertoire: prefer Reti/Indian setups
         opening_bonus = {}
-        if len(self.moves_uci) < 8:
+        ply = len(self.moves_uci)
+
+        if ply < 8:  # First 8 plies only
             if self.color == "white":
-                # As White: prefer 1. Nf3, 2. c4/d4/g3
-                if len(self.moves_uci) == 0:
-                    opening_bonus = {"g1f3": 25}  # 1. Nf3
-                elif len(self.moves_uci) == 2:
-                    opening_bonus = {"c2c4": 20, "d2d4": 15, "g2g3": 15}  # 2. c4/d4/g3
-                elif len(self.moves_uci) == 4:
-                    opening_bonus = {"f1g2": 15, "d2d4": 10}  # 3. Bg2/d4
+                # White: Reti / Zukertort Knight Opening
+                if ply == 0:
+                    # 1. Nf3 (Reti)
+                    opening_bonus = {"g1f3": 30}
+                elif ply == 2:
+                    # 2. c4 (English/Reti) or d4 or g3
+                    opening_bonus = {"c2c4": 25, "d2d4": 15, "g2g3": 20}
+                elif ply == 4:
+                    # 3. Bg2 (Kingside fianchetto) or d4 or Nc3
+                    opening_bonus = {"f1g2": 25, "d2d4": 15, "b1c3": 15}
+                elif ply == 6:
+                    # 4. O-O (castle early) or d4 or Re1
+                    opening_bonus = {"e1g1": 30, "d2d4": 15, "f1e1": 10}
             else:
-                # As Black: Sicilian against e4, Nf6 against d4/c4
-                if len(self.moves_uci) == 1:
+                # Black: Indian Defense vs d4/c4, Sicilian/French vs e4
+                if ply == 1:
                     first_move = self.moves_uci[0] if self.moves_uci else ""
                     if first_move == "e2e4":
-                        opening_bonus = {"c7c5": 25, "e7e5": 15}  # 1... c5/e5
-                    elif first_move in ("d2d4", "c2c4"):
-                        opening_bonus = {"g8f6": 25}  # 1... Nf6
+                        # vs 1.e4: prefer c5 (Sicilian) or e5 (Open) or e6 (French)
+                        opening_bonus = {"c7c5": 30, "e7e5": 20, "e7e6": 15}
+                    elif first_move == "d2d4":
+                        # vs 1.d4: prefer Nf6 (Indian Defense)
+                        opening_bonus = {"g8f6": 30, "d7d5": 15}
+                    elif first_move == "c2c4":
+                        # vs 1.c4: prefer Nf6 or e5
+                        opening_bonus = {"g8f6": 25, "e7e5": 20}
+                    elif first_move == "g1f3":
+                        # vs 1.Nf3: prefer Nf6 or d5
+                        opening_bonus = {"g8f6": 25, "d7d5": 20}
+                    else:
+                        opening_bonus = {"g8f6": 15, "d7d5": 15}
+                elif ply == 3:
+                    # Black's 2nd move
+                    if len(self.moves_uci) >= 2:
+                        first_two = self.moves_uci[:2]
+                        if first_two[0] == "e2e4" and first_two[1] == "c7c5":
+                            # Sicilian: 2...d6 or 2...Nc6 or 2...e6
+                            opening_bonus = {"d7d6": 20, "b8c6": 20, "e7e6": 15}
+                        elif first_two[0] == "d2d4" and first_two[1] == "g8f6":
+                            # Indian: 2...e6 or 2...d5 or 2...g6
+                            opening_bonus = {"e7e6": 20, "d7d5": 20, "g7g6": 20}
+                        elif first_two[0] == "e2e4" and first_two[1] == "e7e5":
+                            # Open game: 2...Nc6 or 2...Nf6
+                            opening_bonus = {"b8c6": 20, "g8f6": 20}
+                        elif first_two[0] == "e2e4" and first_two[1] == "e7e6":
+                            # French: 2...d5
+                            opening_bonus = {"d7d5": 25}
+                        else:
+                            opening_bonus = {"b8c6": 15, "g8f6": 15}
+                elif ply == 5:
+                    # Black's 3rd move - develop and castle
+                    opening_bonus = {"f8e7": 15, "f8c5": 15, "e8g8": 20, "b8c6": 15, "d7d6": 10}
+                elif ply == 7:
+                    # Black's 4th move - castle if possible
+                    opening_bonus = {"e8g8": 25, "f8e7": 10, "c8e6": 10, "c8f5": 10}
 
         # Get MultiPV candidates, apply experience adjustments and opening bonus
         try:
@@ -279,28 +321,43 @@ class GameHandler:
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
+            board = self._board()
+            try:
+                move = chess.Move.from_uci(bestmove)
+                if not board.is_legal(move):
+                    self._log(f"[Game {self.game_id}] Illegal move: {bestmove}, trying next candidate")
+                    # Try next candidate from adjusted multipv list
+                    found_legal = False
+                    if 'adjusted' in dir() and adjusted and len(adjusted) > 1:
+                        for candidate in adjusted[1:]:
+                            try:
+                                alt_move = chess.Move.from_uci(candidate.get('uci', ''))
+                                if board.is_legal(alt_move):
+                                    bestmove = candidate['uci']
+                                    move = alt_move
+                                    found_legal = True
+                                    self._log(f"[Game {self.game_id}] Using alternative: {bestmove}")
+                                    break
+                            except (ValueError, KeyError):
+                                continue
+                    if not found_legal:
+                        self._log(f"[Game {self.game_id}] No legal alternative found, skipping move")
+                        return
+                san = board.san(move)
+                board.push(move)
+            except ValueError:
+                self._log(f"[Game {self.game_id}] Invalid move format: {bestmove}")
+                return
             try:
                 result = self.client.make_move(self.game_id, bestmove)
                 if isinstance(result, dict) and result.get("error"):
                     self._log(f"[Game {self.game_id}] Move failed: {result['error']}")
-                    return  # Don't kill, wait for next gameState
-                board = self._board()
-                try:
-                    move = chess.Move.from_uci(bestmove)
-                    if not board.is_legal(move):
-                        self._log(f"[Game {self.game_id}] Illegal move: {bestmove}")
-                        return
-                    san = board.san(move)
-                    board.push(move)
-                except ValueError:
-                    self._log(f"[Game {self.game_id}] Invalid move: {bestmove}")
                     return
                 self.moves_uci.append(bestmove)
                 self._log(f"[Game {self.game_id}] Move {bestmove} submitted")
             except Exception as e:
                 import traceback
                 self._log(f"[Game {self.game_id}] Move failed: {e}")
-                print(traceback.format_exc(), flush=True)
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
         if self._finished:

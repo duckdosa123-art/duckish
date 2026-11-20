@@ -160,6 +160,14 @@ class Engine:
                 with self.lock:
                     self._ensure_alive()
 
+                    # Cancel any ongoing search and drain stale output
+                    self._send("stop")
+                    while not self._lines.empty():
+                        try:
+                            self._lines.get_nowait()
+                        except queue.Empty:
+                            break
+
                     pos_cmd = "position startpos"
                     if moves_uci:
                         pos_cmd += " moves " + " ".join(moves_uci)
@@ -208,16 +216,24 @@ class Engine:
             try:
                 with self.lock:
                     self._ensure_alive()
-                    
+
+                    # Cancel any ongoing search and drain stale output
+                    self._send("stop")
+                    while not self._lines.empty():
+                        try:
+                            self._lines.get_nowait()
+                        except queue.Empty:
+                            break
+
                     pos_cmd = "position startpos"
                     if moves_uci:
                         pos_cmd += " moves " + " ".join(moves_uci)
                     self._send(pos_cmd)
-                    
+
                     self._send(f"setoption name MultiPV value {multipv}")
                     self._send(f"go movetime {movetime}")
-                    
-                    deadline = time.monotonic() + SEARCH_DEADLINE_S
+
+                    deadline = time.monotonic() + SEARCH_DEADLINE_S * 2
                     # Parse info lines with score and pv
                     info_by_depth: Dict[int, Dict[int, Dict]] = {}  # depth -> rank -> info
                     while True:
