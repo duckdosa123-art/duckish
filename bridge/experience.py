@@ -423,20 +423,18 @@ class ExperienceStore:
                     else:  # draw
                         base_penalty = min(60, 25 + tp["severity"] // 3)
                     
-                    # Record penalty on the move Duckish played
-                    self.record_move(tp["fen"], tp["move_uci"], penalty_cp=float(base_penalty), bonus_cp=0.0)
-                    penalized += 1
-                    
                     # Record bonus on the best move found
                     bonus = 15.0 if result == "loss" else 25.0
+
+                    # Only penalize if the played move was NOT the engine's best alternative
                     if tp["move_uci"] != best_move:
+                        self.record_move(tp["fen"], tp["move_uci"], penalty_cp=float(base_penalty), bonus_cp=0.0)
+                        penalized += 1
                         self.record_move(tp["fen"], best_move, penalty_cp=0.0, bonus_cp=bonus)
                         boosted += 1
-                    
-                    # Also record the position with the game result
-                    self.record_position(tp["fen"], float(best_score), result)
-                    
-                    log(f"[Experience] Turning point at ply {tp['ply']}: played {tp['move_uci']} (score {tp['score_before']}), best was {best_move} (score {best_score}) | Penalty -{base_penalty}cp, Bonus +{bonus}cp")
+                        log(f"[Experience] Turning point at ply {tp['ply']}: played {tp['move_uci']} (score {tp['score_before']}), best was {best_move} (score {best_score}) | Penalty -{base_penalty}cp, Bonus +{bonus}cp")
+                    else:
+                        log(f"[Experience] Turning point at ply {tp['ply']}: played engine-best {tp['move_uci']} — no penalty")
             except Exception as e:
                 log(f"[Experience] Failed to analyze turning point at ply {tp['ply']}: {e}")
         

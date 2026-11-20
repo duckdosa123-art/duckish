@@ -215,109 +215,55 @@ class GameHandler:
         if not self._running:
             return
 
-        # Calculate dynamic movetime based on our remaining time
-        our_time = self.wtime if self.color == "white" else self.btime
-        our_inc = self.winc if self.color == "white" else self.binc
-        if our_time and our_time > 0:
-            inc = our_inc if our_inc and our_inc > 0 else 0
-            movetime = max(150, min(int(our_time // 22 + inc * 0.8), int(our_time * 0.15)))
-        else:
-            movetime = 1000
+        # Movetime in ms. Keep it short so the engine searches fast and Lazy SMP works.
+        # Cap at 1200ms — bot plays like the analyzer (which uses 400ms).
+        movetime = 1000
 
-        # Opening repertoire: prefer Reti/Indian setups
-        opening_bonus = {}
-        ply = len(self.moves_uci)
-
-        if ply < 8:  # First 8 plies only
-            if self.color == "white":
-                # White: Reti / Zukertort Knight Opening
-                if ply == 0:
-                    # 1. Nf3 (Reti)
-                    opening_bonus = {"g1f3": 30}
-                elif ply == 2:
-                    # 2. c4 (English/Reti) or d4 or g3
-                    opening_bonus = {"c2c4": 25, "d2d4": 15, "g2g3": 20}
-                elif ply == 4:
-                    # 3. Bg2 (Kingside fianchetto) or d4 or Nc3
-                    opening_bonus = {"f1g2": 25, "d2d4": 15, "b1c3": 15}
-                elif ply == 6:
-                    # 4. O-O (castle early) or d4 or Re1
-                    opening_bonus = {"e1g1": 30, "d2d4": 15, "f1e1": 10}
-            else:
-                # Black: Indian Defense vs d4/c4, Sicilian/French vs e4
-                if ply == 1:
-                    first_move = self.moves_uci[0] if self.moves_uci else ""
-                    if first_move == "e2e4":
-                        # vs 1.e4: prefer c5 (Sicilian) or e5 (Open) or e6 (French)
-                        opening_bonus = {"c7c5": 30, "e7e5": 20, "e7e6": 15}
-                    elif first_move == "d2d4":
-                        # vs 1.d4: prefer Nf6 (Indian Defense)
-                        opening_bonus = {"g8f6": 30, "d7d5": 15}
-                    elif first_move == "c2c4":
-                        # vs 1.c4: prefer Nf6 or e5
-                        opening_bonus = {"g8f6": 25, "e7e5": 20}
-                    elif first_move == "g1f3":
-                        # vs 1.Nf3: prefer Nf6 or d5
-                        opening_bonus = {"g8f6": 25, "d7d5": 20}
-                    else:
-                        opening_bonus = {"g8f6": 15, "d7d5": 15}
-                elif ply == 3:
-                    # Black's 2nd move
-                    if len(self.moves_uci) >= 2:
-                        first_two = self.moves_uci[:2]
-                        if first_two[0] == "e2e4" and first_two[1] == "c7c5":
-                            # Sicilian: 2...d6 or 2...Nc6 or 2...e6
-                            opening_bonus = {"d7d6": 20, "b8c6": 20, "e7e6": 15}
-                        elif first_two[0] == "d2d4" and first_two[1] == "g8f6":
-                            # Indian: 2...e6 or 2...d5 or 2...g6
-                            opening_bonus = {"e7e6": 20, "d7d5": 20, "g7g6": 20}
-                        elif first_two[0] == "e2e4" and first_two[1] == "e7e5":
-                            # Open game: 2...Nc6 or 2...Nf6
-                            opening_bonus = {"b8c6": 20, "g8f6": 20}
-                        elif first_two[0] == "e2e4" and first_two[1] == "e7e6":
-                            # French: 2...d5
-                            opening_bonus = {"d7d5": 25}
-                        else:
-                            opening_bonus = {"b8c6": 15, "g8f6": 15}
-                elif ply == 5:
-                    # Black's 3rd move - develop and castle
-                    opening_bonus = {"f8e7": 15, "f8c5": 15, "e8g8": 20, "b8c6": 15, "d7d6": 10}
-                elif ply == 7:
-                    # Black's 4th move - castle if possible
-                    opening_bonus = {"e8g8": 25, "f8e7": 10, "c8e6": 10, "c8f5": 10}
-
-        # Get MultiPV candidates, apply experience adjustments and opening bonus
+        # Play the engine's RAW best move (like the analyzer). Single PV keeps
+        # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
+        # Experience is recorded for training but does not override engine choice.
         try:
-            current_fen = self._board().fen()
-            multipv = self.engine.best_moves_multipv(self.moves_uci, movetime=movetime, multipv=3)
-            if multipv:
-                adjusted = self.experience.apply_adjustments(current_fen, multipv)
-                if adjusted:
-                    # Apply opening bonus (only if within 30cp of top move)
-                    top_score = adjusted[0].get("adjusted_score_cp", 0)
-                    for move in adjusted:
-                        uci = move.get("uci", "")
-                        if uci in opening_bonus and move.get("adjusted_score_cp", 0) >= top_score - 30:
-                            move["adjusted_score_cp"] = move.get("adjusted_score_cp", 0) + opening_bonus[uci]
-                            move["learned"] = True
-                    # Re-sort by adjusted score
-                    adjusted.sort(key=lambda x: x.get("adjusted_score_cp", -999999), reverse=True)
-                    for i, m in enumerate(adjusted):
-                        m["rank"] = i + 1
-                    bestmove = adjusted[0].get("uci", "")
-                    if adjusted[0].get("learned"):
-                        print(f"[Game {self.game_id}] Opening preference: {bestmove}", flush=True)
-                else:
-                    bestmove = multipv[0]["uci"]
-            else:
-                bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
+            bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
+            if not bestmove:
+                bestmove = None
         except Exception as e:
             self._log(f"[Game {self.game_id}] Engine error: {e}")
-            try:
-                bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
-            except Exception as e2:
-                self._log(f"[Game {self.game_id}] Engine failed completely: {e2}")
-                return  # Don't kill the game, wait for next event
+            bestmove = None
+
+        # Opening repertoire as a TIGHT tiebreak: only switch to a preferred
+        # opening move if it is within 20cp of the engine's chosen move.
+        # This keeps the Reti/Indian/castling structure without weakening play.
+        if len(self.moves_uci) < 8:
+            opening_pref = {}
+            ply = len(self.moves_uci)
+            if self.color == "white":
+                if ply == 0: opening_pref = {"g1f3"}
+                elif ply == 2: opening_pref = {"c2c4", "g2g3", "d2d4"}
+                elif ply == 4: opening_pref = {"f1g2", "d2d4", "b1c3"}
+                elif ply == 6: opening_pref = {"e1g1"}
+            else:
+                if ply == 1:
+                    first = self.moves_uci[0] if self.moves_uci else ""
+                    if first == "e2e4": opening_pref = {"c7c5", "e7e5", "e7e6"}
+                    elif first == "d2d4": opening_pref = {"g8f6", "d7d5"}
+                    elif first == "c2c4": opening_pref = {"g8f6", "e7e5"}
+                    elif first == "g1f3": opening_pref = {"g8f6", "d7d5"}
+                elif ply == 3: opening_pref = {"b8c6", "g8f6", "e7e6", "d7d5", "g7g6"}
+                elif ply == 5: opening_pref = {"f8e7", "f8c5", "e8g8", "b8c6"}
+                elif ply == 7: opening_pref = {"e8g8", "f8e7"}
+            if opening_pref and bestmove:
+                try:
+                    # Only switch if a preferred move is among engine's near-equal candidates
+                    cands = self.engine.best_moves_multipv(self.moves_uci, movetime=movetime, multipv=3)
+                    if cands:
+                        top_score = cands[0].get("score_cp", 0)
+                        for c in cands:
+                            if c.get("uci") in opening_pref and c.get("score_cp", -99999) >= top_score - 20:
+                                bestmove = c["uci"]
+                                self._log(f"[Game {self.game_id}] Opening preference: {bestmove}")
+                                break
+                except Exception:
+                    pass  # keep engine's bestmove
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
