@@ -62,6 +62,7 @@ class GameHandler:
         self.color = color
         self.initial_fen = initial_fen if initial_fen else "startpos"
         self.moves_uci: List[str] = []
+        self._position_counts: Dict[str, int] = {}
         self.wtime = wtime
         self.btime = btime
         self.winc = winc
@@ -97,6 +98,23 @@ class GameHandler:
                 break
         return board
 
+    def _fen_key(self, board) -> str:
+        """Repetition key: piece placement + side + castling + ep (no move counters)."""
+        return " ".join(board.fen().split()[:4])
+
+    def _rebuild_position_counts(self) -> None:
+        """Count every position reached in the game so far."""
+        self._position_counts = {}
+        board = self._new_board()
+        self._position_counts[self._fen_key(board)] = 1
+        for uci in self.moves_uci:
+            try:
+                board.push_uci(uci)
+            except ValueError:
+                break
+            key = self._fen_key(board)
+            self._position_counts[key] = self._position_counts.get(key, 0) + 1
+
     def _parse_initial_state(self, initial_fen: str, moves: str) -> None:
         self.initial_fen = initial_fen if initial_fen else "startpos"
         self.moves_uci = []
@@ -109,6 +127,7 @@ class GameHandler:
                     board.push(move)
                 except ValueError:
                     break
+        self._rebuild_position_counts()
 
     # -- stream loop ----------------------------------------------------------
 
@@ -203,6 +222,7 @@ class GameHandler:
                 break
             self.moves_uci.append(move.uci())
             board.push(move)
+        self._rebuild_position_counts()
 
     def _is_our_turn(self) -> bool:
         moves_count = len(self.moves_uci)
@@ -280,6 +300,44 @@ class GameHandler:
                             self._log(f"[Game {self.game_id}] Opening preference: {bestmove}")
                 except Exception:
                     pass  # keep engine's bestmove
+
+        # Threefold-repetition guard: the engine's repetition shortcut ignores
+        # contempt, so break the cycle ourselves when we're not getting worse.
+        if bestmove:
+            try:
+                board = self._board()
+                move = chess.Move.from_uci(bestmove)
+                if board.is_legal(move):
+                    board.push(move)
+                    would_repeat = self._position_counts.get(self._fen_key(board), 0) >= 2
+                    board.pop()
+                    if would_repeat:
+                        # Only deviate if we're not clearly worse; get candidates
+                        cands = self.engine.best_moves_multipv(self.moves_uci, movetime=1000, multipv=5)
+                        if cands:
+                            top_score = cands[0].get("score_cp", 0)
+                            # top_score is from our perspective (our turn to move)
+                            if top_score >= -50:
+                                for c in cands[1:]:
+                                    alt = c.get("uci", "")
+                                    score = c.get("score_cp", -99999)
+                                    if score < top_score - 80:
+                                        break  # don't throw away the game
+                                    try:
+                                        alt_move = chess.Move.from_uci(alt)
+                                        if not board.is_legal(alt_move):
+                                            continue
+                                        board.push(alt_move)
+                                        alt_repeats = self._position_counts.get(self._fen_key(board), 0) >= 2
+                                        board.pop()
+                                        if not alt_repeats:
+                                            self._log(f"[Game {self.game_id}] Avoiding repetition: engine chose {bestmove}, playing {alt} instead (score {score} vs {top_score})")
+                                            bestmove = alt
+                                            break
+                                    except ValueError:
+                                        continue
+            except Exception as e:
+                self._log(f"[Game {self.game_id}] Repetition check skipped: {e}")
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
