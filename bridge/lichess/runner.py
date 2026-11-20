@@ -104,13 +104,19 @@ class GameHandler:
     def _run(self) -> None:
         try:
             resp = self.client.stream_game(self.game_id)
-            for line in resp:
+            while True:
                 if not self._running:
                     break
-                line = line.decode("utf-8").strip()
+                raw = resp.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8").strip()
                 if not line:
                     continue
                 event = json.loads(line)
+                typ = event.get("type", "?")
+                moves_str = event.get("moves", "") or event.get("state", {}).get("moves", "")
+                print(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'", flush=True)
                 self._handle_event(event)
         except Exception as e:
             print(f"[Game {self.game_id}] Stream error: {e}", flush=True)
@@ -159,7 +165,11 @@ class GameHandler:
             board.push(move)
 
     def _is_our_turn(self) -> bool:
-        return self._board().turn == (chess.WHITE if self.color == "white" else chess.BLACK)
+        moves_count = len(self.moves_uci)
+        if self.color == "white":
+            return moves_count % 2 == 0
+        else:
+            return moves_count % 2 == 1
 
     def _make_move(self) -> None:
         if not self._running:
@@ -169,30 +179,36 @@ class GameHandler:
         my_winc = self.winc if self.color == "white" else None
         my_binc = self.binc if self.color == "black" else None
 
-        bestmove = self.engine.best_move(
-            self.moves_uci,
-            wtime=my_wtime,
-            btime=my_btime,
-            winc=my_winc,
-            binc=my_binc,
-        )
+        try:
+            bestmove = self.engine.best_move(
+                self.moves_uci,
+                wtime=my_wtime,
+                btime=my_btime,
+                winc=my_winc,
+                binc=my_binc,
+            )
+        except Exception as e:
+            print(f"[Game {self.game_id}] Engine error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return
+
         if bestmove:
-            # Convert to SAN for display and validate against the replay board
-            # before sending; _board() replays moves_uci from the initial FEN.
-            board = self._board()
-            san = bestmove
-            try:
-                move = chess.Move.from_uci(bestmove)
-                san = board.san(move)
-                board.push(move)
-            except ValueError:
-                pass
             try:
                 self.client.make_move(self.game_id, bestmove)
+                board = self._board()
+                try:
+                    move = chess.Move.from_uci(bestmove)
+                    san = board.san(move)
+                    board.push(move)
+                except ValueError:
+                    san = bestmove
                 self.moves_uci.append(bestmove)
                 print(f"[Game {self.game_id}] Played {san} ({bestmove})", flush=True)
             except Exception as e:
                 print(f"[Game {self.game_id}] Move failed: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
         winner = event.get("winner")  # "white", "black", or None for draw
