@@ -8,7 +8,11 @@ import socket
 import urllib.request
 import urllib.error
 
-import requests
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 from typing import Any, Dict, List, Optional
 from http.client import HTTPResponse
@@ -54,6 +58,8 @@ class LichessClient:
 
     def stream_events(self):
         """GET /api/stream/event - NDJSON event stream."""
+        if not HAS_REQUESTS:
+            raise RuntimeError("requests library not installed - streaming unavailable")
         url = f"{LICHESS_API}/stream/event"
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -65,12 +71,14 @@ class LichessClient:
 
     def stream_game(self, game_id: str):
         """GET /api/bot/game/stream/{gameId} - NDJSON game stream."""
+        if not HAS_REQUESTS:
+            raise RuntimeError("requests library not installed - streaming unavailable")
         url = f"{LICHESS_API}/bot/game/stream/{game_id}"
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/x-ndjson",
         }
-        resp = requests.get(url, headers=headers, stream=True, timeout=(10, 30))
+        resp = requests.get(url, headers=headers, stream=True, timeout=(10, 300))
         resp.raise_for_status()
         return resp
 
@@ -131,7 +139,7 @@ class LichessClient:
                         continue
                     perfs = bot.get("perfs", {})
                     blitz = perfs.get("blitz", {})
-                    if blitz.get("games", 0) == 0:
+                    if "games" in blitz and blitz["games"] == 0:
                         continue
                     if bot.get("tosViolation") or bot.get("disabled"):
                         continue

@@ -70,6 +70,7 @@ class GameHandler:
         self.rated = rated
         self.state = state
         self._running = True
+        self._finished = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -114,26 +115,39 @@ class GameHandler:
     def _run(self) -> None:
         self._log(f"[Game {self.game_id}] Opening stream...")
         try:
-            resp = self.client.stream_game(self.game_id)
-            for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
-                if not self._running:
+            while self._running:
+                try:
+                    resp = self.client.stream_game(self.game_id)
+                    for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
+                        if not self._running:
+                            break
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        event = json.loads(line)
+                        typ = event.get("type", "?")
+                        moves_str = event.get("moves", "") or event.get("state", {}).get("moves", "")
+                        self._log(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'")
+                        self._handle_event(event)
+                    # Stream ended - if still running, reconnect after short delay
+                    if self._running:
+                        self._log(f"[Game {self.game_id}] Stream ended, reconnecting...")
+                        time.sleep(2)
+                        continue
+                except Exception as e:
+                    import traceback
+                    self._log(f"[Game {self.game_id}] ERROR: {e}")
+                    print(traceback.format_exc(), flush=True)
+                    if self._running:
+                        self._log(f"[Game {self.game_id}] Reconnecting in 3s...")
+                        time.sleep(3)
+                        continue
                     break
-                if not raw_line:
-                    continue
-                line = raw_line.strip()
-                if not line:
-                    continue
-                event = json.loads(line)
-                typ = event.get("type", "?")
-                moves_str = event.get("moves", "") or event.get("state", {}).get("moves", "")
-                self._log(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'")
-                self._handle_event(event)
-        except Exception as e:
-            import traceback
-            self._log(f"[Game {self.game_id}] ERROR: {e}")
-            print(traceback.format_exc(), flush=True)
         finally:
             self._running = False
+            self._finished = True
 
     def _handle_event(self, event: Dict[str, Any]) -> None:
         typ = event.get("type")
@@ -147,6 +161,15 @@ class GameHandler:
             if self._is_our_turn():
                 self._make_move()
         elif typ == "gameState":
+            status = event.get("status")
+            GAME_END_STATUSES = {"mate", "resign", "draw", "stalemate", "insufficient", "repetition", "fiftymoves", "timeout", "outoftime", "aborted", "cheat", "noStart", "unknownFinish"}
+            if status and status in GAME_END_STATUSES:
+                # Game is over - parse moves, then finish (don't make a move)
+                moves = event.get("moves", "")
+                if moves:
+                    self._parse_incremental_moves(moves)
+                self._handle_game_finish(event)
+                return
             moves = event.get("moves", "")
             if moves:
                 self._parse_incremental_moves(moves)
@@ -154,11 +177,6 @@ class GameHandler:
             self.btime = event.get("btime", self.btime)
             if self._is_our_turn():
                 self._make_move()
-            # Check if game is over (only real game-ending statuses, NOT "started")
-            status = event.get("status")
-            GAME_END_STATUSES = {"mate", "resign", "draw", "stalemate", "insufficient", "repetition", "fiftymoves", "timeout", "outoftime", "aborted", "cheat", "noStart", "unknownFinish"}
-            if status and status in GAME_END_STATUSES:
-                self._handle_game_finish(event)
         elif typ == "chatLine":
             pass  # ignore chat
         elif typ == "gameFinish":
@@ -177,6 +195,7 @@ class GameHandler:
             try:
                 move = board.parse_san(san)
             except ValueError:
+                self._log(f"[Game {self.game_id}] Failed to parse move: {san}")
                 break
             self.moves_uci.append(move.uci())
             board.push(move)
@@ -191,10 +210,6 @@ class GameHandler:
     def _make_move(self) -> None:
         if not self._running:
             return
-        my_wtime = self.wtime if self.color == "white" else None
-        my_btime = self.btime if self.color == "black" else None
-        my_winc = self.winc if self.color == "white" else None
-        my_binc = self.binc if self.color == "black" else None
 
         # Calculate dynamic movetime based on our remaining time
         our_time = self.wtime if self.color == "white" else self.btime
@@ -228,7 +243,7 @@ class GameHandler:
         # Get MultiPV candidates, apply experience adjustments and opening bonus
         try:
             current_fen = self._board().fen()
-            multipv = self.engine.best_moves_multipv(self.moves_uci, movetime=1000, multipv=3)
+            multipv = self.engine.best_moves_multipv(self.moves_uci, movetime=movetime, multipv=3)
             if multipv:
                 adjusted = self.experience.apply_adjustments(current_fen, multipv)
                 if adjusted:
@@ -250,24 +265,32 @@ class GameHandler:
                     bestmove = multipv[0]["uci"]
             else:
                 bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
-        except Exception:
-            bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
+        except Exception as e:
+            self._log(f"[Game {self.game_id}] Engine error: {e}")
+            try:
+                bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
+            except Exception as e2:
+                self._log(f"[Game {self.game_id}] Engine failed completely: {e2}")
+                return  # Don't kill the game, wait for next event
 
         if bestmove:
             self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
             try:
                 result = self.client.make_move(self.game_id, bestmove)
                 if isinstance(result, dict) and result.get("error"):
-                    print(f"[Game {self.game_id}] Move failed: {result['error']}", flush=True)
-                    self._running = False
-                    return
+                    self._log(f"[Game {self.game_id}] Move failed: {result['error']}")
+                    return  # Don't kill, wait for next gameState
                 board = self._board()
                 try:
                     move = chess.Move.from_uci(bestmove)
+                    if not board.is_legal(move):
+                        self._log(f"[Game {self.game_id}] Illegal move: {bestmove}")
+                        return
                     san = board.san(move)
                     board.push(move)
                 except ValueError:
-                    san = bestmove
+                    self._log(f"[Game {self.game_id}] Invalid move: {bestmove}")
+                    return
                 self.moves_uci.append(bestmove)
                 self._log(f"[Game {self.game_id}] Move {bestmove} submitted")
             except Exception as e:
@@ -276,9 +299,20 @@ class GameHandler:
                 print(traceback.format_exc(), flush=True)
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
+        if self._finished:
+            return
+        self._finished = True
+
         winner = event.get("winner")
         status = event.get("status")
-        
+
+        # Skip non-result statuses
+        NON_RESULT_STATUSES = {"aborted", "noStart", "cheat"}
+        if status in NON_RESULT_STATUSES:
+            print(f"[Game {self.game_id}] Skipping non-result status: {status}", flush=True)
+            self._running = False
+            return
+
         # If no winner field (gameState event), infer from status
         if not winner and status:
             if status in ("draw", "stalemate", "insufficient", "repetition", "fiftymoves"):
@@ -310,14 +344,20 @@ class GameHandler:
 
         # Auto-train on loss/draw games with >= 8 moves
         if game_result in ("loss", "draw") and len(self.moves_uci) >= 8:
-            import threading
             def _train():
+                # Wait until no active games before training
+                import time as _time
+                for _ in range(60):  # wait up to 60s
+                    if not self.engine.lock.locked():
+                        break
+                    _time.sleep(1)
                 try:
                     summary = self.experience.record_game(
                         game_id=self.game_id,
                         moves_uci=self.moves_uci,
                         result=game_result,
                         engine=self.engine,
+                        duckish_color=self.color,
                         verbose_log=lambda msg: print(msg, flush=True),
                     )
                     if not summary.get("skipped"):
@@ -336,19 +376,24 @@ class GameHandler:
         final_fen = self._board().fen()
         self.experience.record_position(final_fen, None, result)
 
-        # For losses, penalize the last move we played.
+        # For losses, penalize the last move WE played.
         if result == "loss" and self.moves_uci:
-            board = self._new_board()
-            for uci in self.moves_uci[:-1]:
-                try:
-                    board.push_uci(uci)
-                except ValueError:
+            # Find the last move that was ours (odd index for black, even for white)
+            our_color_idx = 0 if self.color == "white" else 1
+            last_our_idx = None
+            for i in range(len(self.moves_uci) - 1, -1, -1):
+                if i % 2 == our_color_idx:
+                    last_our_idx = i
                     break
-            fen_before = board.fen()
-            last_move = self.moves_uci[-1]
-            self.experience.record_move(
-                fen_before, last_move, penalty_cp=BLUNDER_THRESHOLD_CP, bonus_cp=0.0
-            )
+            if last_our_idx is not None and last_our_idx > 0:
+                board = self._new_board()
+                for uci in self.moves_uci[:last_our_idx]:
+                    try:
+                        board.push_uci(uci)
+                    except ValueError:
+                        break
+                fen_before = board.fen()
+                self.experience.record_move(fen_before, self.moves_uci[last_our_idx], penalty_cp=BLUNDER_THRESHOLD_CP, bonus_cp=0.0)
 
     def stop(self) -> None:
         self._running = False
@@ -386,6 +431,7 @@ class LichessBot:
         self._current_game_info: Optional[Dict[str, Any]] = None
         self._challenge_log: List[Dict[str, Any]] = []
         self._cooldown_until: Dict[str, float] = {}
+        self._timers: List[threading.Timer] = []
         self._perf_book_loaded = os.path.isfile(BOOK_PATH)
         self._exp_book_loaded = os.path.isfile(DEFAULT_DB_PATH)
 
@@ -478,6 +524,9 @@ class LichessBot:
                 self._log_event(f"HTTP error: {e.code}, reconnecting in 5s...")
                 time.sleep(5)
             except Exception as e:
+                if "401" in str(e):
+                    self._log_event("Authentication failed: invalid token")
+                    break
                 self._log_event(f"Stream error: {e}, reconnecting in 5s...")
                 time.sleep(5)
 
@@ -545,14 +594,18 @@ class LichessBot:
             self._log_event(f"  -> Accept failed: {e}")
 
     def _handle_game_start(self, game: Dict[str, Any]) -> None:
+        if self._current_game_id or self.games:
+            return  # Ignore second gameStart
+
         game_id = game.get("id")
         color = game.get("color")  # "white" or "black"
         initial_fen = game.get("initialFen", "startpos")
-        moves = game.get("state", {}).get("moves", "")
-        wtime = game.get("state", {}).get("wtime")
-        btime = game.get("state", {}).get("btime")
-        winc = game.get("winc")
-        binc = game.get("binc")
+        state = game.get("state", {})
+        moves = state.get("moves", "")
+        wtime = state.get("wtime")
+        btime = state.get("btime")
+        winc = state.get("winc")
+        binc = state.get("binc")
         variant = game.get("variant", "standard")
         rated = game.get("rated", False)
         opponent = game.get("opponent", {}).get("username") or game.get("opponent", {}).get("id") or "unknown"
@@ -666,7 +719,9 @@ class LichessBot:
 
             if self._auto_match_active:
                 self._set_phase("IDLE", "Game finished \u2014 searching next opponent...")
-                threading.Timer(5.0, self._auto_match_next).start()
+                t = threading.Timer(5.0, self._auto_match_next)
+                self._timers.append(t)
+                t.start()
             else:
                 self._set_phase("IDLE", "Idle \u2014 click Start Auto-Match or challenge a bot")
 
@@ -717,6 +772,14 @@ class LichessBot:
     def _auto_match_next(self) -> None:
         if not self._auto_match_active:
             return
+        # Clean up dead game handlers
+        for gid in list(self.games.keys()):
+            h = self.games.get(gid)
+            if h and not h._thread.is_alive():
+                del self.games[gid]
+                if self._current_game_id == gid:
+                    self._current_game_id = None
+                    self._current_game_info = None
         # Don't start a new game if one is already in progress
         if self._current_game_id:
             return  # Wait for current game to finish
@@ -745,7 +808,9 @@ class LichessBot:
 
             if not candidates:
                 self._set_phase("IDLE", "No suitable bots found, retrying in 30s")
-                threading.Timer(30.0, self._auto_match_next).start()
+                t = threading.Timer(30.0, self._auto_match_next)
+                self._timers.append(t)
+                t.start()
                 return
 
             random.shuffle(candidates)
@@ -781,6 +846,7 @@ class LichessBot:
                     return  # Game started
                 self._set_phase("DECLINED", f"{opponent} declined (timeout) \u2014 trying next bot...", target_bot=opponent)
                 self._log_event(f"{opponent} did not accept in time")
+                self._cooldown_until[opponent] = time.time() + 120  # 2min cooldown on timeout
                 if challenge_id:
                     try:
                         self.client.cancel_challenge(challenge_id)
@@ -789,18 +855,25 @@ class LichessBot:
 
             if self._auto_match_active:
                 self._set_phase("IDLE", "Exhausted candidates, retrying in 30s")
-                threading.Timer(30.0, self._auto_match_next).start()
+                t = threading.Timer(30.0, self._auto_match_next)
+                self._timers.append(t)
+                t.start()
         except Exception as e:
             self._set_phase("IDLE", f"Auto-match error: {e}")
             self._log_event(f"Auto-match error: {e}")
             if self._auto_match_active:
-                threading.Timer(30.0, self._auto_match_next).start()
+                t = threading.Timer(30.0, self._auto_match_next)
+                self._timers.append(t)
+                t.start()
 
     # -- shutdown -------------------------------------------------------------
 
     def shutdown(self) -> None:
         self._running = False
         self._auto_match_active = False
+        for t in self._timers:
+            t.cancel()
+        self._timers.clear()
         for handler in self.games.values():
             handler.stop()
         self.engine.shutdown()

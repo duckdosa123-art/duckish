@@ -217,7 +217,7 @@ class Engine:
                     self._send(f"setoption name MultiPV value {multipv}")
                     self._send(f"go movetime {movetime}")
                     
-                    deadline = time.monotonic() + 30
+                    deadline = time.monotonic() + SEARCH_DEADLINE_S
                     # Parse info lines with score and pv
                     info_by_depth: Dict[int, Dict[int, Dict]] = {}  # depth -> rank -> info
                     while True:

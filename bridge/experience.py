@@ -258,6 +258,7 @@ class ExperienceStore:
         moves_uci: List[str],
         result: str,  # "win" | "loss" | "draw"
         engine,  # Engine instance with best_moves_multipv()
+        duckish_color: str = "white",
         verbose_log=None,  # Optional callable(msg: str) for logging
     ) -> Dict[str, Any]:
         """Post-mortem turning-point analysis and experience recording.
@@ -433,9 +434,15 @@ class ExperienceStore:
             except Exception as e:
                 log(f"[Experience] Failed to analyze turning point at ply {tp['ply']}: {e}")
         
-        # Record final position
+        # Record final position - use the actual final FEN after all moves
         if evaluations:
-            final_fen = evaluations[-1]["fen"]
+            final_board = chess.Board()
+            for uci in moves_uci:
+                try:
+                    final_board.push_uci(uci)
+                except ValueError:
+                    break
+            final_fen = final_board.fen()
             self.record_position(final_fen, None, result)
         
         # Get total lessons count

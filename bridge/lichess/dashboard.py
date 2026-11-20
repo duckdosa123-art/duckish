@@ -15,6 +15,8 @@ from .config import DASHBOARD_HOST, DASHBOARD_PORT, REPO_ROOT
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
+    allow_reuse_address = True
+
     def __init__(self, bot_ref, *args, **kwargs):
         self.bot_ref = bot_ref
         super().__init__(*args, **kwargs)
