@@ -228,7 +228,7 @@ const $ = (s) => document.querySelector(s);
 const log = (msg, cls='') => { const el=document.createElement('div'); el.className='log-entry'+(cls?' '+cls:''); el.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="log-msg">${msg}</span>`; $('#challengeLog').prepend(el); };
 let autoMatchActive = false;
 async function fetchStatus(){
-try{const r=await fetch('/api/status');if(!r.ok)throw 0;const d=await r.json();updateUI(d);}catch{$('#statusBadge').textContent='Error';$('#statusBadge').className='status-badge status-offline';}
+try{const r=await fetch('/api/status');if(!r.ok)throw 0;const d=await r.json();updateUI(d);}catch(e){try{log('Status fetch error: '+(e && e.message ? e.message : String(e)));}catch(_){}$('#statusBadge').textContent='Error';$('#statusBadge').className='status-badge status-offline';}
 }
 function updateUI(d){
 const ok = d.ok === true;
@@ -283,7 +283,6 @@ const consoleOut=$('#consoleOutput');
 if(logs && logs.length){
 consoleOut.innerHTML=logs.map(e=>`<div class="console-line"><span class="console-time">${new Date(e.time*1000).toLocaleTimeString()}</span><span class="console-msg console-phase-${phase}">${e.msg}</span></div>`).join('');
 consoleOut.scrollTop=consoleOut.scrollHeight;
-}
 }
 }
 $('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST'});log('Auto-match started','log-success');fetchStatus();};

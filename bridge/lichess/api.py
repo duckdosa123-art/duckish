@@ -36,8 +36,8 @@ class LichessClient:
         req = urllib.request.Request(url, data=body, method=method, headers=self.headers)
         # Default timeouts: 3.0s for bot-list fetch, 10s for startup calls, 30s otherwise
         if timeout is None:
-            if endpoint == "/api/bot/online":
-                timeout = 3.0
+            if endpoint == "/bot/online":
+                timeout = 5.0
             elif endpoint in ("/account", "/upgrade"):
                 timeout = 10.0
             else:
@@ -86,8 +86,8 @@ class LichessClient:
         return json.loads(resp.read().decode("utf-8"))
 
     def get_online_bots(self, own_username: Optional[str] = None) -> List[Dict[str, Any]]:
-        """GET /api/bot/online - fetch online bots via NDJSON stream with 3s timeout."""
-        resp = self._request("GET", "/api/bot/online")
+        """GET /api/bot/online - fetch online bots via NDJSON stream with 5s timeout."""
+        resp = self._request("GET", "/bot/online")
         bots: List[Dict[str, Any]] = []
         try:
             for raw_line in resp:
@@ -108,8 +108,8 @@ class LichessClient:
                     if bot.get("tosViolation") or bot.get("disabled"):
                         continue
                     bots.append(bot)
-                    if len(bots) >= 1:
-                        break  # Stop as soon as we have at least 1 valid bot
+                    if len(bots) >= 30:
+                        break  # Stop once we have up to 30 valid bots
                 except json.JSONDecodeError:
                     continue
         except (socket.timeout, TimeoutError):

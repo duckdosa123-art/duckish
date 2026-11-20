@@ -124,8 +124,8 @@ class GameHandler:
             self._parse_initial_state(event.get("initialFen", "startpos"), state.get("moves", ""))
             self.wtime = state.get("wtime")
             self.btime = state.get("btime")
-            self.winc = event.get("winc")
-            self.binc = event.get("binc")
+            self.winc = state.get("winc")
+            self.binc = state.get("binc")
             if self._is_our_turn():
                 self._make_move()
         elif typ == "gameState":
@@ -147,6 +147,8 @@ class GameHandler:
         The event stream is cumulative, so we skip the first ``len(moves_uci)``
         tokens (already known) and convert the remainder to UCI.
         """
+        if not moves_str:
+            return
         board = self._board()
         for san in moves_str.split()[len(self.moves_uci):]:
             try:
@@ -175,10 +177,20 @@ class GameHandler:
             binc=my_binc,
         )
         if bestmove:
+            # Convert to SAN for display and validate against the replay board
+            # before sending; _board() replays moves_uci from the initial FEN.
+            board = self._board()
+            san = bestmove
+            try:
+                move = chess.Move.from_uci(bestmove)
+                san = board.san(move)
+                board.push(move)
+            except ValueError:
+                pass
             try:
                 self.client.make_move(self.game_id, bestmove)
                 self.moves_uci.append(bestmove)
-                print(f"[Game {self.game_id}] Played {bestmove}", flush=True)
+                print(f"[Game {self.game_id}] Played {san} ({bestmove})", flush=True)
             except Exception as e:
                 print(f"[Game {self.game_id}] Move failed: {e}", flush=True)
 
@@ -256,6 +268,7 @@ class LichessBot:
         self._current_game_id: Optional[str] = None
         self._current_game_info: Optional[Dict[str, Any]] = None
         self._challenge_log: List[Dict[str, Any]] = []
+        self._cooldown_until: Dict[str, float] = {}
         self._perf_book_loaded = os.path.isfile(BOOK_PATH)
         self._exp_book_loaded = os.path.isfile(DEFAULT_DB_PATH)
 
@@ -407,7 +420,7 @@ class LichessBot:
         binc = game.get("binc")
         variant = game.get("variant", "standard")
         rated = game.get("rated", False)
-        opponent = game.get("opponent", {}).get("name", "unknown")
+        opponent = game.get("opponent", {}).get("username") or game.get("opponent", {}).get("id") or "unknown"
         opponent_rating = game.get("opponent", {}).get("rating")
 
         self._log_event(f"Game started: {game_id} as {color} vs {opponent} ({variant} rated={rated})")
@@ -580,6 +593,8 @@ class LichessBot:
                     continue
                 if bot.get("tosViolation") or bot.get("disabled"):
                     continue
+                if name in self._cooldown_until and time.time() < self._cooldown_until[name]:
+                    continue
                 candidates.append(name)
 
             if not candidates:
@@ -605,11 +620,13 @@ class LichessBot:
                     err = e.read().decode('utf-8')
                     self._set_phase("DECLINED", f"{opponent} declined ({err}) \u2014 trying next bot...", target_bot=opponent)
                     self._log_event(f"Challenge to {opponent} failed: {err}")
+                    self._cooldown_until[opponent] = time.time() + (3600 if "bot.vsBot.day" in err else 600)
                     time.sleep(2)
                     continue
                 except Exception as e:
                     self._set_phase("DECLINED", f"{opponent} error ({e}) \u2014 trying next bot...", target_bot=opponent)
                     self._log_event(f"Challenge to {opponent} error: {e}")
+                    self._cooldown_until[opponent] = time.time() + 600
                     time.sleep(2)
                     continue
                 # Wait ~10s for acceptance
