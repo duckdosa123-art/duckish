@@ -236,9 +236,19 @@ class GameHandler:
         if not self._running:
             return
 
-        # Movetime in ms. Keep it short so the engine searches fast and Lazy SMP works.
-        # Cap at 1200ms — bot plays like the analyzer (which uses 400ms).
+        # Base time per move. Captures get a deeper search because trades are
+        # where a position can turn into a lost endgame — the extra depth lets
+        # the engine see tablebase-verified bad results before committing.
         movetime = 1000
+        try:
+            board_for_cap = self._board()
+            # A capture move lands on a square occupied by an opponent piece
+            # (or is an en-passant capture). Check the move that just happened
+            # from our move list, plus whether any legal capture is available.
+            if any(board_for_cap.is_capture(m) for m in board_for_cap.legal_moves):
+                movetime = 2500
+        except Exception:
+            pass
 
         # Play the engine's RAW best move (like the analyzer). Single PV keeps
         # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
