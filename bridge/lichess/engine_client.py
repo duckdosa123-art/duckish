@@ -144,10 +144,10 @@ class Engine:
     def best_move(
         self,
         moves_uci: List[str],
-        wtime: Optional[int] = None,
-        btime: Optional[int] = None,
-        winc: Optional[int] = None,
-        binc: Optional[int] = None,
+        wtime: Optional[int] = None,  # unused, kept for compat
+        btime: Optional[int] = None,  # unused, kept for compat
+        winc: Optional[int] = None,   # unused, kept for compat
+        binc: Optional[int] = None,   # unused, kept for compat
         movetime: Optional[int] = None,
     ) -> Optional[str]:
         """Run search and return bestmove UCI.
@@ -165,22 +165,9 @@ class Engine:
                         pos_cmd += " moves " + " ".join(moves_uci)
                     self._send(pos_cmd)
 
-                    # Build go command with time management
-                    parts = ["go"]
-                    if wtime is not None:
-                        parts.append(f"wtime {max(0, wtime - MOVE_OVERHEAD_MS)}")
-                    if btime is not None:
-                        parts.append(f"btime {max(0, btime - MOVE_OVERHEAD_MS)}")
-                    if winc is not None:
-                        parts.append(f"winc {winc}")
-                    if binc is not None:
-                        parts.append(f"binc {binc}")
-                    if movetime is not None:
-                        parts.append(f"movetime {movetime}")
-                    else:
-                        # Default: cap at 1000ms to prevent timeouts on long clocks
-                        parts.append("movetime 1000")
-                    self._send(" ".join(parts))
+                    # Always use movetime to cap search time - engine ignores wtime when movetime is present
+                    movetime_ms = movetime if movetime is not None else 1000
+                    self._send(f"go movetime {movetime_ms}")
 
                     deadline = time.monotonic() + SEARCH_DEADLINE_S
                     bestmove_uci = ""
