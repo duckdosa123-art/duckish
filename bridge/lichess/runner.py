@@ -303,7 +303,8 @@ class GameHandler:
                     pass  # keep engine's bestmove
 
         # Threefold-repetition guard: the engine's repetition shortcut ignores
-        # contempt, so break the cycle ourselves when we're not getting worse.
+        # contempt, so break the cycle ourselves. In a drawn endgame where we're
+        # ahead on time, deliberately shuffle a non-repeating move to win on time.
         if bestmove:
             try:
                 board = self._board()
@@ -313,30 +314,54 @@ class GameHandler:
                     would_repeat = self._position_counts.get(self._fen_key(board), 0) >= 2
                     board.pop()
                     if would_repeat:
-                        # Only deviate if we're not clearly worse; get candidates
+                        # Try engine's MultiPV alternatives first (keeps quality)
+                        top_score = 0
                         cands = self.engine.best_moves_multipv(self.moves_uci, movetime=1000, multipv=5)
+                        replacement = None
                         if cands:
                             top_score = cands[0].get("score_cp", 0)
-                            # top_score is from our perspective (our turn to move)
-                            if top_score >= -50:
-                                for c in cands[1:]:
-                                    alt = c.get("uci", "")
-                                    score = c.get("score_cp", -99999)
-                                    if score < top_score - 80:
-                                        break  # don't throw away the game
-                                    try:
-                                        alt_move = chess.Move.from_uci(alt)
-                                        if not board.is_legal(alt_move):
-                                            continue
-                                        board.push(alt_move)
-                                        alt_repeats = self._position_counts.get(self._fen_key(board), 0) >= 2
-                                        board.pop()
-                                        if not alt_repeats:
-                                            self._log(f"[Game {self.game_id}] Avoiding repetition: engine chose {bestmove}, playing {alt} instead (score {score} vs {top_score})")
-                                            bestmove = alt
-                                            break
-                                    except ValueError:
+                            for c in cands[1:]:
+                                alt = c.get("uci", "")
+                                score = c.get("score_cp", -99999)
+                                if score < top_score - 80:
+                                    break
+                                try:
+                                    alt_move = chess.Move.from_uci(alt)
+                                    if not board.is_legal(alt_move):
                                         continue
+                                    board.push(alt_move)
+                                    alt_repeats = self._position_counts.get(self._fen_key(board), 0) >= 2
+                                    board.pop()
+                                    if not alt_repeats:
+                                        replacement = alt
+                                        break
+                                except ValueError:
+                                    continue
+                        # If no acceptable engine alternative, and we're ahead on time
+                        # and not losing, pick ANY legal non-repeating move (shuffle to win on time).
+                        if replacement is None:
+                            our_ms = self.wtime if self.color == "white" else self.btime
+                            their_ms = self.btime if self.color == "white" else self.wtime
+                            time_ahead_ms = (our_ms or 0) - (their_ms or 0)
+                            if time_ahead_ms > 30_000 and top_score >= -50:
+                                legal = list(board.legal_moves)
+                                # Prefer king/rook shuffles that don't repeat and don't hang material
+                                shuffles = []
+                                for lm in legal:
+                                    board.push(lm)
+                                    rep = self._position_counts.get(self._fen_key(board), 0) >= 2
+                                    board.pop()
+                                    if not rep:
+                                        shuffles.append(lm.uci())
+                                if shuffles:
+                                    # Pick a quiet move: prefer king moves then rook moves, avoid captures
+                                    quiet = [u for u in shuffles if not board.is_capture(chess.Move.from_uci(u))]
+                                    pool = quiet or shuffles
+                                    replacement = pool[0]  # deterministic
+                                    self._log(f"[Game {self.game_id}] Time-ahead shuffle: avoiding repetition, playing {replacement} (+{time_ahead_ms//1000}s)")
+                        if replacement:
+                            self._log(f"[Game {self.game_id}] Avoiding repetition: engine chose {bestmove}, playing {replacement} instead")
+                            bestmove = replacement
             except Exception as e:
                 self._log(f"[Game {self.game_id}] Repetition check skipped: {e}")
 
