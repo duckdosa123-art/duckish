@@ -63,10 +63,12 @@ class Engine:
         self._alive = True
 
         self._lines = queue.Queue()
-        self._reader_thread = threading.Thread(target=self._read_stdout_loop, daemon=True)
+        proc = self.proc
+        lines = self._lines
+        self._reader_thread = threading.Thread(target=self._read_stdout_loop, args=(proc, lines), daemon=True)
         self._reader_thread.start()
 
-        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True)
         self._stderr_thread.start()
 
         # UCI handshake
@@ -83,23 +85,33 @@ class Engine:
         else:
             self._book_loaded = False
 
-    def _drain_stderr(self) -> None:
-        assert self.proc and self.proc.stderr
-        for _ in self.proc.stderr:
+    def _drain_stderr(self, proc) -> None:
+        try:
+            if proc and proc.stderr:
+                for _ in proc.stderr:
+                    pass
+        except Exception:
             pass
 
-    def _read_stdout_loop(self) -> None:
-        assert self.proc and self.proc.stdout
+    def _read_stdout_loop(self, proc, lines) -> None:
         try:
-            for line in self.proc.stdout:
-                self._lines.put(line.rstrip("\n"))
+            if proc and proc.stdout:
+                for line in proc.stdout:
+                    lines.put(line.rstrip("\n"))
+        except Exception:
+            pass
         finally:
-            self._lines.put(None)
+            lines.put(None)  # sentinel into THIS thread's captured queue
 
     def _send(self, cmd: str) -> None:
-        assert self.proc and self.proc.stdin
-        self.proc.stdin.write(cmd + "\n")
-        self.proc.stdin.flush()
+        p = self.proc
+        if p is None or p.stdin is None or p.poll() is not None:
+            raise RuntimeError("engine stdin not available")
+        try:
+            p.stdin.write(cmd + "\n")
+            p.stdin.flush()
+        except OSError as e:
+            raise BrokenPipeError(str(e)) from e
 
     def _read_line(self, deadline: float) -> Optional[str]:
         remaining = deadline - time.monotonic()
@@ -183,7 +195,7 @@ class Engine:
 
                     self._last_error = None
                     return bestmove_uci if bestmove_uci else None
-            except (RuntimeError, EOFError, BrokenPipeError, TimeoutError) as e:
+            except (RuntimeError, EOFError, OSError, TimeoutError) as e:
                 self._last_error = str(e)
                 if attempt == 0:
                     self.respawn()
@@ -277,7 +289,7 @@ class Engine:
                         results = [{"uci": bestmove, "score_cp": 0, "rank": 1}]
                     
                     return results
-            except (RuntimeError, EOFError, BrokenPipeError, TimeoutError) as e:
+            except (RuntimeError, EOFError, OSError, TimeoutError) as e:
                 self._last_error = str(e)
                 if attempt == 0:
                     self.respawn()

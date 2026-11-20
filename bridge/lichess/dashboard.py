@@ -146,6 +146,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/toggle-challenges":
             self.bot_ref._accept_challenges = not self.bot_ref._accept_challenges
             self._write_response(200, {"Content-Type": "application/json"}, json.dumps({"ok": True, "accept_challenges": self.bot_ref._accept_challenges}).encode("utf-8"))
+        elif self.path == "/api/engine/restart":
+            try:
+                self.bot_ref.engine.respawn()
+                self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
+            except Exception as e:
+                self._write_response(500, {"Content-Type": "application/json"}, json.dumps({"error": str(e)}).encode("utf-8"))
         else:
             self._write_response(404, {}, b"")
 
@@ -292,6 +298,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <div class="control-group">
 <button id="btnStart" class="btn btn-primary">Start Auto-Match</button>
 <button id="btnStop" class="btn btn-danger" disabled>Stop Auto-Match</button>
+<button id="btnRestartEngine" class="btn">Restart Engine</button>
 </div>
 <div class="control-group toggle">
 <input type="checkbox" id="toggleRated" checked>
@@ -383,6 +390,7 @@ consoleOut.scrollTop=consoleOut.scrollHeight;
 }
 $('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST'});log('Auto-match started','log-success');fetchStatus();};
 $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST'});log('Auto-match stopped','log-warn');fetchStatus();};
+$('#btnRestartEngine').onclick=async()=>{try{await fetch('/api/engine/restart',{method:'POST'});log('Engine restarted','log-success');}catch(e){log('Engine restart failed','log-error');}fetchStatus();};
 $('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
 $('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
 $('#toggleChallenges').onchange = async () => {
