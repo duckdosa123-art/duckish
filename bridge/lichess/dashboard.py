@@ -170,7 +170,10 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <body>
 <header>
 <h1>\U0001F986 Duckish Bot Dashboard</h1>
+<div style="display:flex;align-items:center;gap:16px;">
+<a class="watch-btn" href="http://127.0.0.1:5000/experience" target="_blank" rel="noopener">View Experience Book (/experience)</a>
 <span id="statusBadge" class="status-badge status-offline">Offline</span>
+</div>
 </header>
 <div class="action-box" id="actionBox">
 <span class="action-phase" id="actionPhase">IDLE</span>
