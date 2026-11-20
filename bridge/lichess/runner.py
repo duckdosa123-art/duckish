@@ -102,6 +102,7 @@ class GameHandler:
     # -- stream loop ----------------------------------------------------------
 
     def _run(self) -> None:
+        print(f"[Game {self.game_id}] Opening stream...", flush=True)
         try:
             resp = self.client.stream_game(self.game_id)
             while True:
@@ -119,7 +120,9 @@ class GameHandler:
                 print(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'", flush=True)
                 self._handle_event(event)
         except Exception as e:
-            print(f"[Game {self.game_id}] Stream error: {e}", flush=True)
+            import traceback
+            print(f"[Game {self.game_id}] ERROR: {e}", flush=True)
+            traceback.print_exc()
         finally:
             self._running = False
 
@@ -194,8 +197,9 @@ class GameHandler:
             return
 
         if bestmove:
+            print(f"[Game {self.game_id}] Engine chose {bestmove}", flush=True)
             try:
-                self.client.make_move(self.game_id, bestmove)
+                result = self.client.make_move(self.game_id, bestmove)
                 board = self._board()
                 try:
                     move = chess.Move.from_uci(bestmove)
@@ -204,10 +208,10 @@ class GameHandler:
                 except ValueError:
                     san = bestmove
                 self.moves_uci.append(bestmove)
-                print(f"[Game {self.game_id}] Played {san} ({bestmove})", flush=True)
+                print(f"[Game {self.game_id}] Move {bestmove} submitted", flush=True)
             except Exception as e:
-                print(f"[Game {self.game_id}] Move failed: {e}", flush=True)
                 import traceback
+                print(f"[Game {self.game_id}] Move failed: {e}", flush=True)
                 traceback.print_exc()
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
