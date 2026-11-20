@@ -115,7 +115,7 @@ class GameHandler:
         self._log(f"[Game {self.game_id}] Opening stream...")
         try:
             resp = self.client.stream_game(self.game_id)
-            for raw_line in resp.iter_lines(decode_unicode=True):
+            for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
                 if not self._running:
                     break
                 if not raw_line:
@@ -373,7 +373,7 @@ class LichessBot:
         while self._running:
             try:
                 resp = self.client.stream_events()
-                for raw_line in resp.iter_lines(decode_unicode=True):
+                for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
                     if not self._running:
                         break
                     if not raw_line:
