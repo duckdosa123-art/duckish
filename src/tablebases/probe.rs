@@ -115,6 +115,11 @@ pub fn get_root_wdl_dtz(board: &Board) -> Option<WdlDtzResult> {
     const WHITE: bool = true;
     const BLACK: bool = false;
 
+    // guard for invalid positions, mirroring the in-search `get_wdl` guard.
+    if board.fifty_move_counter() != 0 {
+        return None;
+    }
+
     // SAFETY: Not much.
     #[cfg(feature = "syzygy")]
     unsafe {
@@ -135,6 +140,13 @@ pub fn get_root_wdl_dtz(board: &Board) -> Option<WdlDtzResult> {
             std::ptr::null_mut(),
         );
 
+        // Check for a failed probe BEFORE decoding anything from `result`: a failed
+        // probe returns all-ones, and the from/to squares decoded below would be
+        // invalid (panicking in `Square::new`) or point at a bogus move.
+        if result == TB_RESULT_FAILED {
+            return None;
+        }
+
         let wdl = (result & TB_RESULT_WDL_MASK) >> TB_RESULT_WDL_SHIFT;
         let wdl = match wdl {
             TB_WIN => WDL::Win,
@@ -142,10 +154,6 @@ pub fn get_root_wdl_dtz(board: &Board) -> Option<WdlDtzResult> {
             _ => WDL::Draw,
         };
         let dtz = (result & TB_RESULT_DTZ_MASK) >> TB_RESULT_DTZ_SHIFT;
-
-        if result == TB_RESULT_FAILED {
-            return None;
-        }
 
         let mut moves = MoveList::new();
         board.generate_moves(&mut moves);

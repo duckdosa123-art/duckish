@@ -197,6 +197,13 @@ class Engine:
                 with self.lock:
                     self._ensure_alive()
 
+                    # Sync with the engine: reading until readyok discards any
+                    # stale bestmove/info lines left by a previous aborted search.
+                    # Without this, the next _read_line can return a stale move
+                    # instantly (instant, wrong moves).
+                    self._send("isready")
+                    self._read_until(lambda l: l.strip() == "readyok", 8.0)
+
                     pos_cmd = "position startpos"
                     if moves_uci:
                         pos_cmd += " moves " + " ".join(moves_uci)
@@ -262,57 +269,72 @@ class Engine:
                 with self.lock:
                     self._ensure_alive()
 
+                    # Sync with the engine: reading until readyok discards any
+                    # stale bestmove/info lines left by a previous aborted search.
+                    # Without this, the next _read_line can return a stale move
+                    # instantly (instant, wrong moves).
+                    self._send("isready")
+                    self._read_until(lambda l: l.strip() == "readyok", 8.0)
+
                     pos_cmd = "position startpos"
                     if moves_uci:
                         pos_cmd += " moves " + " ".join(moves_uci)
                     self._send(pos_cmd)
 
                     self._send(f"setoption name MultiPV value {multipv}")
-                    self._send(f"go movetime {movetime}")
+                    try:
+                        self._send(f"go movetime {movetime}")
 
-                    deadline = time.monotonic() + max(SEARCH_DEADLINE_S * 2, (movetime / 1000.0) + 5.0)
-                    # Parse info lines with score and pv
-                    info_by_depth: Dict[int, Dict[int, Dict]] = {}  # depth -> rank -> info
-                    while True:
-                        line = self._read_line(deadline)
-                        if line is None:
-                            raise RuntimeError("engine process died during search")
-                        if line.startswith("bestmove"):
-                            pieces = line.split()
-                            bestmove = pieces[1] if len(pieces) >= 2 else ""
-                            break
-                        if line.startswith("info") and "score" in line and "pv" in line:
-                            # Parse: info depth 20 seldepth 25 multipv 1 score cp 35 nodes 1234 pv e2e4 e7e5
-                            parts = line.split()
-                            depth = 0
-                            rank = 1
-                            score_cp = 0
-                            pv_move = ""
-                            for i, p in enumerate(parts):
-                                if p == "depth" and i + 1 < len(parts):
-                                    depth = int(parts[i + 1])
-                                elif p == "multipv" and i + 1 < len(parts):
-                                    rank = int(parts[i + 1])
-                                elif p == "score" and i + 1 < len(parts):
-                                    if parts[i + 1] == "cp" and i + 2 < len(parts):
-                                        score_cp = int(parts[i + 2])
-                                    elif parts[i + 1] == "mate" and i + 2 < len(parts):
-                                        mate = int(parts[i + 2])
-                                        score_cp = 100000 - abs(mate) * 1000 if mate > 0 else -100000 + abs(mate) * 1000
-                                elif p == "pv" and i + 1 < len(parts):
-                                    pv_move = parts[i + 1]
-                            if pv_move:
-                                if depth not in info_by_depth:
-                                    info_by_depth[depth] = {}
-                                info_by_depth[depth][rank] = {
-                                    "uci": pv_move,
-                                    "score_cp": score_cp,
-                                    "rank": rank
-                                }
-                    
-                    # Reset MultiPV to 1
-                    self._send("setoption name MultiPV value 1")
-                    
+                        deadline = time.monotonic() + max(SEARCH_DEADLINE_S * 2, (movetime / 1000.0) + 5.0)
+                        # Parse info lines with score and pv
+                        info_by_depth: Dict[int, Dict[int, Dict]] = {}  # depth -> rank -> info
+                        while True:
+                            line = self._read_line(deadline)
+                            if line is None:
+                                raise RuntimeError("engine process died during search")
+                            if line.startswith("bestmove"):
+                                pieces = line.split()
+                                bestmove = pieces[1] if len(pieces) >= 2 else ""
+                                break
+                            if line.startswith("info") and "score" in line and "pv" in line:
+                                # Parse: info depth 20 seldepth 25 multipv 1 score cp 35 nodes 1234 pv e2e4 e7e5
+                                parts = line.split()
+                                depth = 0
+                                rank = 1
+                                score_cp = 0
+                                pv_move = ""
+                                for i, p in enumerate(parts):
+                                    if p == "depth" and i + 1 < len(parts):
+                                        depth = int(parts[i + 1])
+                                    elif p == "multipv" and i + 1 < len(parts):
+                                        rank = int(parts[i + 1])
+                                    elif p == "score" and i + 1 < len(parts):
+                                        if parts[i + 1] == "cp" and i + 2 < len(parts):
+                                            score_cp = int(parts[i + 2])
+                                        elif parts[i + 1] == "mate" and i + 2 < len(parts):
+                                            mate = int(parts[i + 2])
+                                            score_cp = 100000 - abs(mate) * 1000 if mate > 0 else -100000 + abs(mate) * 1000
+                                    elif p == "pv" and i + 1 < len(parts):
+                                        pv_move = parts[i + 1]
+                                if pv_move:
+                                    if depth not in info_by_depth:
+                                        info_by_depth[depth] = {}
+                                    info_by_depth[depth][rank] = {
+                                        "uci": pv_move,
+                                        "score_cp": score_cp,
+                                        "rank": rank
+                                    }
+                    finally:
+                        # Always reset MultiPV to 1, even if the search raised, so
+                        # a failed search can't leave MultiPV=3 (which disables
+                        # Lazy SMP and weakens/slows the main search). The inner
+                        # try/except guarantees this reset can't mask the original
+                        # exception.
+                        try:
+                            self._send("setoption name MultiPV value 1")
+                        except Exception:
+                            pass
+
                     # Find deepest depth with all ranks
                     if info_by_depth:
                         max_depth = max(info_by_depth.keys())
@@ -325,10 +347,10 @@ class Engine:
                             # Fallback: use whatever we have
                             max_d = max(info_by_depth.keys())
                             results = [info_by_depth[max_d][r] for r in sorted(info_by_depth[max_d].keys())]
-                    
+
                     if not results and bestmove:
                         results = [{"uci": bestmove, "score_cp": 0, "rank": 1}]
-                    
+
                     return results
             except (RuntimeError, EOFError, OSError, TimeoutError) as e:
                 self._last_error = str(e)

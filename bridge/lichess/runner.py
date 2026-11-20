@@ -353,7 +353,7 @@ class GameHandler:
                             our_ms = self.wtime if self.color == "white" else self.btime
                             their_ms = self.btime if self.color == "white" else self.wtime
                             time_ahead_ms = (our_ms or 0) - (their_ms or 0)
-                            if time_ahead_ms > 30_000 and top_score >= -50:
+                            if time_ahead_ms > 30_000 and cands and -50 <= top_score <= 50:
                                 legal = list(board.legal_moves)
                                 # Prefer king/rook shuffles that don't repeat and don't hang material
                                 shuffles = []
