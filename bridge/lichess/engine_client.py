@@ -25,6 +25,10 @@ from .config import (
 
 SEARCH_DEADLINE_S = 10  # hard cap on a single search
 
+# Syzygy tablebase directory (repo root /syzygy). Optional: created by
+# bridge/download_syzygy.py. The engine probes it only when <= N pieces remain.
+SYZYGY_PATH = os.path.join(REPO_ROOT, "syzygy")
+
 
 class Engine:
     """Manages the UCI engine subprocess with thread-safe I/O."""
@@ -86,6 +90,14 @@ class Engine:
             self._book_loaded = True
         else:
             self._book_loaded = False
+        if os.path.isdir(SYZYGY_PATH):
+            # Only set SyzygyPath if tablebase files are actually present
+            try:
+                has_tb = any(f.lower().endswith((".rtbw", ".rtbz")) for f in os.listdir(SYZYGY_PATH))
+            except OSError:
+                has_tb = False
+            if has_tb:
+                self._send(f"setoption name SyzygyPath value {SYZYGY_PATH}")
 
     def _drain_stderr(self, proc) -> None:
         try:

@@ -18,6 +18,13 @@ Duckish is a fork of Viridithas with the following enhancements:
 - **Dynamic CPU thread scaling.** `Threads = max(1, cpu_count // 2)` by default, with a `setoption` override.
 - **256 MB default transposition hash.** Raised from the upstream 16 MB default.
 
+### Endgame Tablebases (optional)
+
+- Duckish supports Syzygy endgame tablebases via the `SyzygyPath` UCI option (probe limits `SyzygyProbeLimit` default 7, `SyzygyProbeDepth`).
+- Download the 3-4-5 man WDL+DTZ tables with `python bridge/download_syzygy.py` (~938 MB, ~290 files into `syzygy/`). The bot auto-detects `syzygy/` and sets `SyzygyPath` automatically.
+- **Requires the engine built with tablebase support:** use `cargo build --release --features syzygy` or `make final-release`. A plain `cargo build --release` does **not** include tablebases.
+- Caveat: perfect play only for positions with <= 5 pieces; measured gain is roughly +2 to +9 Elo. Correctness, not magic.
+
 ### Honest technical caveats
 
 - These are experimental features and may not match upstream Viridithas strength.

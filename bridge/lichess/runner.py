@@ -19,6 +19,7 @@ from .engine_client import Engine
 from .dashboard import DashboardServer
 from .config import (
     BotState,
+    MatchConfig,
     ENGINE_PATH,
     DASHBOARD_HOST,
     DASHBOARD_PORT,
@@ -507,7 +508,8 @@ class LichessBot:
         self._session_losses = 0
         self._session_draws = 0
         self._auto_match_active = False
-        self._auto_match_rated = True
+        self.match_config = MatchConfig.load()
+        self._auto_match_rated = self.match_config.rated
         self._accept_challenges = True
         self._auto_match_thread: Optional[threading.Thread] = None
         self._current_game_id: Optional[str] = None
@@ -555,10 +557,15 @@ class LichessBot:
         except Exception as e:
             print(f"Upgrade error: {e}", flush=True)
 
-    def challenge_user(self, username: str, rated: bool = True) -> None:
-        self._set_phase("CHALLENGING", f"Challenging {username} (3+2 {'Rated' if rated else 'Casual'} Standard)...", target_bot=username)
+    def challenge_user(self, username: str, rated: bool = True, clock_limit: Optional[int] = None, clock_increment: Optional[int] = None) -> None:
+        if clock_limit is None:
+            clock_limit = self.match_config.limit_min * 60
+        if clock_increment is None:
+            clock_increment = self.match_config.increment
+        tc_str = f"{self.match_config.limit_min}+{self.match_config.increment}"
+        self._set_phase("CHALLENGING", f"Challenging {username} ({tc_str} {'Rated' if rated else 'Casual'} Standard)...", target_bot=username)
         try:
-            result = self.client.challenge_user(username, clock_limit=180, clock_increment=2, rated=rated)
+            result = self.client.challenge_user(username, clock_limit=clock_limit, clock_increment=clock_increment, rated=rated)
             challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
             self._set_phase("WAITING_REPLY", f"Waiting for {username} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=username)
             self._log_event(f"Challenge sent to {username}")
@@ -830,6 +837,7 @@ class LichessBot:
             "phase": state_copy["phase"],
             "detail": state_copy["detail"],
             "auto_match": self._auto_match_active,
+            "match_config": self.match_config.to_dict(),
             "accept_challenges": self._accept_challenges,
             "logs": state_copy["logs"],
             "username": self._username,
@@ -847,7 +855,11 @@ class LichessBot:
 
     # -- auto match -----------------------------------------------------------
 
-    def start_auto_match(self) -> None:
+    def start_auto_match(self, config=None) -> None:
+        if config is not None and isinstance(config, dict):
+            self.match_config = MatchConfig.from_dict(config)
+            self.match_config.save()
+            self._auto_match_rated = self.match_config.rated
         if self._auto_match_active:
             return
         self._auto_match_active = True
@@ -892,9 +904,16 @@ class LichessBot:
                 if name == self._username:
                     continue
                 perfs = bot.get("perfs", {})
-                blitz_games = perfs.get("blitz", {}).get("games", 0)
-                if blitz_games == 0:
+                speed = self.match_config.speed
+                perf = perfs.get(speed, {})
+                if perf.get("games", 0) == 0:
                     continue
+                rating = perf.get("rating")
+                if rating is not None:
+                    if self.match_config.elo_min and rating < self.match_config.elo_min:
+                        continue
+                    if self.match_config.elo_max and rating > self.match_config.elo_max:
+                        continue
                 if bot.get("tosViolation") or bot.get("disabled"):
                     continue
                 if name in self._cooldown_until and time.time() < self._cooldown_until[name]:
@@ -916,9 +935,10 @@ class LichessBot:
                     info = self._current_game_info or {}
                     self._set_phase("IN_GAME", f"Playing vs {info.get('opponent_name', opponent)} ({info.get('opponent_rating') or '?'}) \u2014 Move 0 | Eval ?", active_game_url=f"https://lichess.org/{self._current_game_id}")
                     return  # Game started
-                self._set_phase("CHALLENGING", f"Challenging {opponent} (3+2 Rated Standard)...", target_bot=opponent)
+                tc_str = f"{self.match_config.limit_min}+{self.match_config.increment}"
+                self._set_phase("CHALLENGING", f"Challenging {opponent} ({tc_str} {'Rated' if self._auto_match_rated else 'Casual'} Standard)...", target_bot=opponent)
                 try:
-                    result = self.client.challenge_user(opponent, clock_limit=180, clock_increment=2, rated=self._auto_match_rated)
+                    result = self.client.challenge_user(opponent, clock_limit=self.match_config.limit_min * 60, clock_increment=self.match_config.increment, rated=self._auto_match_rated)
                     challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
                     self._set_phase("WAITING_REPLY", f"Waiting for {opponent} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=opponent)
                     self._log_event(f"Challenge sent to {opponent}")

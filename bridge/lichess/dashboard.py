@@ -124,7 +124,17 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/auto-match":
-            self.bot_ref.start_auto_match()
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+            config = None
+            if body:
+                try:
+                    parsed = json.loads(body)
+                    if isinstance(parsed, dict):
+                        config = parsed
+                except Exception:
+                    config = None
+            self.bot_ref.start_auto_match(config)
             self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
         elif self.path == "/api/auto-match/stop":
             self.bot_ref.stop_auto_match()
@@ -136,8 +146,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 data = json.loads(body)
                 username = data.get("username", "").strip()
                 rated = data.get("rated", True)
+                limit_min = data.get("limit_min")
+                increment = data.get("increment")
+                clock_limit = int(limit_min) * 60 if limit_min is not None else None
+                clock_increment = int(increment) if increment is not None else None
                 if username:
-                    self.bot_ref.challenge_user(username, rated=rated)
+                    self.bot_ref.challenge_user(username, rated=rated, clock_limit=clock_limit, clock_increment=clock_increment)
                     self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
                 else:
                     self._write_response(400, {"Content-Type": "application/json"}, b'{"error":"username required"}')
@@ -315,6 +329,35 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 </div>
 <div class="log-container" id="challengeLog"></div>
 </div>
+<div class="card">
+<h2>Match Settings</h2>
+<div class="controls">
+<div class="control-group">
+<label for="cfgSpeed">Speed</label>
+<select id="cfgSpeed">
+<option value="bullet">Bullet</option>
+<option value="blitz" selected>Blitz</option>
+<option value="rapid">Rapid</option>
+</select>
+</div>
+<div class="control-group">
+<label for="cfgLimit">Limit (min)</label>
+<input type="number" id="cfgLimit" min="1" max="60" value="3">
+</div>
+<div class="control-group">
+<label for="cfgInc">Increment (sec)</label>
+<input type="number" id="cfgInc" min="0" max="60" value="2">
+</div>
+<div class="control-group">
+<label for="cfgEloMin">ELO min</label>
+<input type="number" id="cfgEloMin" min="0" max="4000" value="0">
+</div>
+<div class="control-group">
+<label for="cfgEloMax">ELO max</label>
+<input type="number" id="cfgEloMax" min="0" max="4000" value="0">
+</div>
+</div>
+</div>
 <div class="card console-card">
 <h2>Live Activity Console</h2>
 <div class="console-toolbar">
@@ -329,6 +372,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 const $ = (s) => document.querySelector(s);
 const log = (msg, cls='') => { const el=document.createElement('div'); el.className='log-entry'+(cls?' '+cls:''); el.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="log-msg">${msg}</span>`; $('#challengeLog').prepend(el); };
 let autoMatchActive = false;
+function matchConfig(){ return {speed:$('#cfgSpeed').value, limit_min:parseInt($('#cfgLimit').value||3), increment:parseInt($('#cfgInc').value||2), rated:$('#toggleRated').checked, elo_min:parseInt($('#cfgEloMin').value||0), elo_max:parseInt($('#cfgEloMax').value||0)}; }
 async function fetchStatus(){
 try{const r=await fetch('/api/status');if(!r.ok)throw 0;const d=await r.json();updateUI(d);}catch(e){try{log('Status fetch error: '+(e && e.message ? e.message : String(e)));}catch(_){}$('#statusBadge').textContent='Error';$('#statusBadge').className='status-badge status-offline';}
 }
@@ -347,6 +391,15 @@ $('#expBook').textContent=d.exp_book_loaded?'Loaded':'Missing';
 $('#btnStart').disabled=autoMatch;$('#btnStop').disabled=!autoMatch;
 autoMatchActive=autoMatch;
 $('#toggleChallenges').checked = d.accept_challenges !== false;
+if(d.match_config){
+ const mc=d.match_config;
+ const active=document.activeElement;
+ if(active!==$('#cfgSpeed')) $('#cfgSpeed').value=mc.speed||'blitz';
+ if(active!==$('#cfgLimit')) $('#cfgLimit').value=mc.limit_min!=null?mc.limit_min:3;
+ if(active!==$('#cfgInc')) $('#cfgInc').value=mc.increment!=null?mc.increment:2;
+ if(active!==$('#cfgEloMin')) $('#cfgEloMin').value=mc.elo_min!=null?mc.elo_min:0;
+ if(active!==$('#cfgEloMax')) $('#cfgEloMax').value=mc.elo_max!=null?mc.elo_max:0;
+}
 const g=d.active_game;
 if(g){
 $('#activeGame').innerHTML=`
@@ -388,10 +441,10 @@ consoleOut.innerHTML=logs.map(e=>`<div class="console-line"><span class="console
 consoleOut.scrollTop=consoleOut.scrollHeight;
 }
 }
-$('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST'});log('Auto-match started','log-success');fetchStatus();};
+$('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(matchConfig())});log('Auto-match started','log-success');fetchStatus();};
 $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST'});log('Auto-match stopped','log-warn');fetchStatus();};
 $('#btnRestartEngine').onclick=async()=>{try{await fetch('/api/engine/restart',{method:'POST'});log('Engine restarted','log-success');}catch(e){log('Engine restart failed','log-error');}fetchStatus();};
-$('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
+$('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked,limit_min:parseInt($('#cfgLimit').value||3),increment:parseInt($('#cfgInc').value||2)})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
 $('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
 $('#toggleChallenges').onchange = async () => {
   await fetch('/api/toggle-challenges', {method: 'POST'});

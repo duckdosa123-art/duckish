@@ -4,9 +4,11 @@ Configuration constants and shared bot state for the Duckish Lichess bot.
 Pure stdlib (os, threading, time, typing).
 """
 import os
+import json
 import time
 import threading
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, ClassVar, Dict, List, Optional
 
 # ---- Paths ------------------------------------------------------------------
 
@@ -61,6 +63,54 @@ MOVE_OVERHEAD_MS = 100  # safety buffer so we never flag on network latency
 # Supported time controls (standard variants only)
 SUPPORTED_VARIANTS = {"standard"}
 SUPPORTED_SPEEDS = {"bullet", "blitz", "rapid"}  # real-time only, no correspondence
+
+
+# ---- Match settings (persisted to settings.json) ----------------------------
+
+SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+
+@dataclass
+class MatchConfig:
+    speed: str = "blitz"        # bullet | blitz | rapid
+    limit_min: int = 3          # clock limit in minutes
+    increment: int = 2          # increment in seconds
+    rated: bool = True
+    elo_min: int = 0            # 0 = no lower bound
+    elo_max: int = 0            # 0 = no upper bound
+
+    def to_dict(self):
+        return {"speed": self.speed, "limit_min": self.limit_min,
+                "increment": self.increment, "rated": self.rated,
+                "elo_min": self.elo_min, "elo_max": self.elo_max}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            speed=str(d.get("speed", "blitz")),
+            limit_min=int(d.get("limit_min", 3)),
+            increment=int(d.get("increment", 2)),
+            rated=bool(d.get("rated", True)),
+            elo_min=int(d.get("elo_min", 0)),
+            elo_max=int(d.get("elo_max", 0)),
+        )
+
+    @classmethod
+    def load(cls):
+        try:
+            if os.path.isfile(SETTINGS_PATH):
+                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    return cls.from_dict(json.load(f))
+        except Exception:
+            pass
+        return cls()
+
+    def save(self):
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, indent=2)
+        except Exception:
+            pass
 
 
 # ---- Shared bot state -------------------------------------------------------
