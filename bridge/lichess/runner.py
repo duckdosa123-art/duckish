@@ -131,16 +131,18 @@ class GameHandler:
                         moves_str = event.get("moves", "") or event.get("state", {}).get("moves", "")
                         self._log(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'")
                         self._handle_event(event)
-                    # Stream ended - if still running, reconnect after short delay
-                    if self._running:
+                    # Stream ended - if still running AND not finished, reconnect
+                    if self._running and not self._finished:
                         self._log(f"[Game {self.game_id}] Stream ended, reconnecting...")
                         time.sleep(2)
                         continue
+                    else:
+                        break
                 except Exception as e:
                     import traceback
                     self._log(f"[Game {self.game_id}] ERROR: {e}")
                     print(traceback.format_exc(), flush=True)
-                    if self._running:
+                    if self._running and not self._finished:
                         self._log(f"[Game {self.game_id}] Reconnecting in 3s...")
                         time.sleep(3)
                         continue
@@ -162,6 +164,8 @@ class GameHandler:
                 self._make_move()
         elif typ == "gameState":
             status = event.get("status")
+            if isinstance(status, dict):
+                status = status.get("name", "unknown")
             GAME_END_STATUSES = {"mate", "resign", "draw", "stalemate", "insufficient", "repetition", "fiftymoves", "timeout", "outoftime", "aborted", "cheat", "noStart", "unknownFinish"}
             if status and status in GAME_END_STATUSES:
                 # Game is over - parse moves, then finish (don't make a move)
@@ -302,15 +306,18 @@ class GameHandler:
         if self._finished:
             return
         self._finished = True
+        self._running = False  # STOP THE GAME LOOP IMMEDIATELY
 
         winner = event.get("winner")
         status = event.get("status")
+        # Lichess may send status as a dict {"id": 34, "name": "draw"} or a string
+        if isinstance(status, dict):
+            status = status.get("name", "unknown")
 
         # Skip non-result statuses
         NON_RESULT_STATUSES = {"aborted", "noStart", "cheat"}
         if status in NON_RESULT_STATUSES:
             print(f"[Game {self.game_id}] Skipping non-result status: {status}", flush=True)
-            self._running = False
             return
 
         # If no winner field (gameState event), infer from status
@@ -365,8 +372,6 @@ class GameHandler:
                 except Exception as e:
                     print(f"[Experience] Training failed for game {self.game_id}: {e}", flush=True)
             threading.Thread(target=_train, daemon=True).start()
-
-        self._running = False
 
     def _record_experience(self, result: str) -> None:
         """Post-mortem learning: record the final position and penalize a losing blunder."""
@@ -693,6 +698,9 @@ class LichessBot:
         game_id = game.get("id")
         winner = game.get("winner")  # "white", "black", or None for draw
         status = game.get("status")
+        # Lichess may send status as a dict {"id": 34, "name": "draw"} or a string
+        if isinstance(status, dict):
+            status = status.get("name", "unknown")
 
         if game_id in self.games:
             handler = self.games[game_id]
