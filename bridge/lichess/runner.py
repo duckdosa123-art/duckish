@@ -154,6 +154,11 @@ class GameHandler:
             self.btime = event.get("btime", self.btime)
             if self._is_our_turn():
                 self._make_move()
+            # Check if game is over (gameState includes status when game ends)
+            status = event.get("status")
+            if status:
+                # Game is over - synthesize a gameFinish event
+                self._handle_game_finish(event)
         elif typ == "chatLine":
             pass  # ignore chat
         elif typ == "gameFinish":
@@ -271,8 +276,25 @@ class GameHandler:
                 print(traceback.format_exc(), flush=True)
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
-        winner = event.get("winner")  # "white", "black", or None for draw
-        status = event.get("status")  # "mate", "resign", "timeout", etc.
+        winner = event.get("winner")
+        status = event.get("status")
+        
+        # If no winner field (gameState event), infer from status
+        if not winner and status:
+            if status in ("draw", "stalemate", "insufficient", "repetition", "fiftymoves"):
+                winner = None
+            elif status == "mate":
+                # The side NOT to move delivered mate
+                board = self._board()
+                winner = "white" if board.turn == "black" else "black"
+            elif status == "resign":
+                # The side to move resigned
+                board = self._board()
+                winner = "black" if board.turn == "white" else "white"
+            elif status in ("timeout", "outoftime"):
+                # The side that ran out of time lost
+                board = self._board()
+                winner = "black" if board.turn == "white" else "white"
 
         game_result = "draw"
         game_winner = "draw"
@@ -620,6 +642,12 @@ class LichessBot:
             opponent_name = self._current_game_info['opponent_name'] if self._current_game_info else 'unknown'
             self._log_event(f"Game vs {opponent_name} finished: {result} ({status})")
             self._log_challenge(f"Game vs {opponent_name}: {result} ({status})", success=(result == "win"))
+
+            # Call handler's game finish (records experience + auto-training)
+            try:
+                handler._handle_game_finish({"type": "gameFinish", "winner": winner, "status": status})
+            except Exception as e:
+                print(f"[Game {game_id}] Handler finish error: {e}", flush=True)
 
             del self.games[game_id]
             if self._current_game_id == game_id:
