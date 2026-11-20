@@ -223,7 +223,14 @@ class GameHandler:
         # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
         # Experience is recorded for training but does not override engine choice.
         try:
-            bestmove = self.engine.best_move(self.moves_uci, movetime=movetime)
+            bestmove = self.engine.best_move(
+                self.moves_uci,
+                wtime=self.wtime,
+                btime=self.btime,
+                winc=self.winc,
+                binc=self.binc,
+                movetime=movetime,
+            )
             if not bestmove:
                 bestmove = None
         except Exception as e:
@@ -257,11 +264,13 @@ class GameHandler:
                     cands = self.engine.best_moves_multipv(self.moves_uci, movetime=movetime, multipv=3)
                     if cands:
                         top_score = cands[0].get("score_cp", 0)
-                        for c in cands:
-                            if c.get("uci") in opening_pref and c.get("score_cp", -99999) >= top_score - 20:
-                                bestmove = c["uci"]
-                                self._log(f"[Game {self.game_id}] Opening preference: {bestmove}")
-                                break
+                        # Randomize among preferred moves within 20cp of the engine's top,
+                        # so Duckish varies its Reti/Indian openings instead of repeating one line.
+                        eligible = [c for c in cands if c.get("uci") in opening_pref and c.get("score_cp", -99999) >= top_score - 20]
+                        if eligible:
+                            choice = random.choice(eligible)
+                            bestmove = choice["uci"]
+                            self._log(f"[Game {self.game_id}] Opening preference: {bestmove}")
                 except Exception:
                     pass  # keep engine's bestmove
 

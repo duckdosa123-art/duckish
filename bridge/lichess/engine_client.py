@@ -20,6 +20,7 @@ from .config import (
     DEFAULT_HASH_MB,
     DEFAULT_THREADS,
     MOVE_OVERHEAD_MS,
+    CONTEMPT,
 )
 
 SEARCH_DEADLINE_S = 10  # hard cap on a single search
@@ -79,6 +80,7 @@ class Engine:
         self._send(f"setoption name Hash value {self._hash_mb}")
         self._send("setoption name MultiPV value 1")  # Lazy SMP strength
         self._send(f"setoption name Threads value {self._threads}")
+        self._send(f"setoption name Contempt value {CONTEMPT}")
         if BOOK_PATH and os.path.isfile(BOOK_PATH):
             self._send(f"setoption name BookPath value {BOOK_PATH}")
             self._book_loaded = True
@@ -156,16 +158,19 @@ class Engine:
     def best_move(
         self,
         moves_uci: List[str],
-        wtime: Optional[int] = None,  # unused, kept for compat
-        btime: Optional[int] = None,  # unused, kept for compat
-        winc: Optional[int] = None,   # unused, kept for compat
-        binc: Optional[int] = None,   # unused, kept for compat
+        wtime: Optional[int] = None,  # our clock in ms (with btime activates book)
+        btime: Optional[int] = None,  # opponent clock in ms
+        winc: Optional[int] = None,   # white increment in ms
+        binc: Optional[int] = None,   # black increment in ms
         movetime: Optional[int] = None,
     ) -> Optional[str]:
         """Run search and return bestmove UCI.
 
-        Uses wtime/btime/winc/binc with an overhead buffer so we never flag on
-        network latency. One respawn retry on transport failure.
+        When both wtime and btime are supplied, real clocks are sent so the
+        engine's Polyglot book and its own time manager activate; otherwise a
+        fixed movetime is used. wtime/btime/winc/binc are buffered by
+        MOVE_OVERHEAD_MS so we never flag on network latency. One respawn retry
+        on transport failure.
         """
         for attempt in range(2):
             try:
@@ -177,11 +182,24 @@ class Engine:
                         pos_cmd += " moves " + " ".join(moves_uci)
                     self._send(pos_cmd)
 
-                    # Always use movetime to cap search time - engine ignores wtime when movetime is present
-                    movetime_ms = movetime if movetime is not None else 1000
-                    self._send(f"go movetime {movetime_ms}")
+                    # Use real clocks when available: this activates Polyglot book
+                    # probing and the engine's own time manager. `go movetime` skips the book.
+                    if wtime is not None and btime is not None:
+                        wt = max(0, wtime - MOVE_OVERHEAD_MS)
+                        bt = max(0, btime - MOVE_OVERHEAD_MS)
+                        go_cmd = f"go wtime {wt} btime {bt}"
+                        if winc is not None:
+                            go_cmd += f" winc {winc}"
+                        if binc is not None:
+                            go_cmd += f" binc {binc}"
+                        self._send(go_cmd)
+                        our_ms = max(wtime, btime)
+                        deadline = time.monotonic() + min(120.0, max(20.0, our_ms / 1000.0 * 0.5 + 10.0))
+                    else:
+                        movetime_ms = movetime if movetime is not None else 1000
+                        self._send(f"go movetime {movetime_ms}")
+                        deadline = time.monotonic() + max(SEARCH_DEADLINE_S, (movetime_ms / 1000.0) + 5.0)
 
-                    deadline = time.monotonic() + max(SEARCH_DEADLINE_S, (movetime_ms / 1000.0) + 5.0)
                     bestmove_uci = ""
                     while True:
                         line = self._read_line(deadline)
