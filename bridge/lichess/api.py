@@ -64,6 +64,10 @@ class LichessClient:
         resp = self._request("POST", f"/challenge/{challenge_id}/decline", {"reason": reason})
         return json.loads(resp.read().decode("utf-8"))
 
+    def cancel_challenge(self, challenge_id: str) -> Dict[str, Any]:
+        resp = self._request("POST", f"/challenge/{challenge_id}/cancel")
+        return json.loads(resp.read().decode("utf-8"))
+
     def make_move(self, game_id: str, move_uci: str) -> Dict[str, Any]:
         resp = self._request("POST", f"/bot/game/{game_id}/move/{move_uci}")
         return json.loads(resp.read().decode("utf-8"))

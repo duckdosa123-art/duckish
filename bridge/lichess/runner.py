@@ -383,6 +383,12 @@ class LichessBot:
         # Ignore other events
 
     def _handle_challenge(self, challenge: Dict[str, Any]) -> None:
+        # Ignore our own outgoing challenges
+        challenger_id = challenge.get("challenger", {}).get("id", "").lower()
+        our_username = self._username.lower() if self._username else ""
+        if our_username and challenger_id == our_username:
+            return
+
         challenge_id = challenge.get("id")
         variant = challenge.get("variant", {}).get("key", "standard")
         speed = challenge.get("speed", "unknown")
@@ -635,6 +641,11 @@ class LichessBot:
                     return  # Game started
                 self._set_phase("DECLINED", f"{opponent} declined (timeout) \u2014 trying next bot...", target_bot=opponent)
                 self._log_event(f"{opponent} did not accept in time")
+                if challenge_id:
+                    try:
+                        self.client.cancel_challenge(challenge_id)
+                    except Exception as e:
+                        self._log_event(f"Failed to cancel challenge {challenge_id}: {e}")
 
             if self._auto_match_active:
                 self._set_phase("IDLE", "Exhausted candidates, retrying in 30s")
