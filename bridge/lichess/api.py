@@ -6,6 +6,9 @@ Pure stdlib (json, socket, urllib, typing).
 import json
 import socket
 import urllib.request
+
+import requests
+
 from typing import Any, Dict, List, Optional
 from http.client import HTTPResponse
 
@@ -48,13 +51,27 @@ class LichessClient:
         """POST /upgrade - convert account to bot (per official docs)."""
         return self._request("POST", "/upgrade", {}, timeout=10.0)
 
-    def stream_events(self) -> HTTPResponse:
+    def stream_events(self):
         """GET /api/stream/event - NDJSON event stream."""
-        return self._request("GET", "/stream/event", stream=True)
+        url = f"{LICHESS_API}/stream/event"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/x-ndjson",
+        }
+        resp = requests.get(url, headers=headers, stream=True, timeout=(10, 30))
+        resp.raise_for_status()
+        return resp
 
-    def stream_game(self, game_id: str) -> HTTPResponse:
+    def stream_game(self, game_id: str):
         """GET /api/bot/game/stream/{gameId} - NDJSON game stream."""
-        return self._request("GET", f"/bot/game/stream/{game_id}", stream=True)
+        url = f"{LICHESS_API}/bot/game/stream/{game_id}"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/x-ndjson",
+        }
+        resp = requests.get(url, headers=headers, stream=True, timeout=(10, 30))
+        resp.raise_for_status()
+        return resp
 
     def accept_challenge(self, challenge_id: str) -> Dict[str, Any]:
         resp = self._request("POST", f"/challenge/{challenge_id}/accept")

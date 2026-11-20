@@ -53,6 +53,7 @@ class GameHandler:
         binc: Optional[int] = None,
         variant: str = "standard",
         rated: bool = False,
+        state: Optional[Any] = None,
     ):
         self.client = client
         self.engine = engine
@@ -67,9 +68,18 @@ class GameHandler:
         self.binc = binc
         self.variant = variant
         self.rated = rated
+        self.state = state
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    # -- logging --------------------------------------------------------------
+
+    def _log(self, msg: str) -> None:
+        if self.state:
+            self.state.log(msg)
+        else:
+            print(msg, flush=True)
 
     # -- board helpers --------------------------------------------------------
 
@@ -102,27 +112,26 @@ class GameHandler:
     # -- stream loop ----------------------------------------------------------
 
     def _run(self) -> None:
-        print(f"[Game {self.game_id}] Opening stream...", flush=True)
+        self._log(f"[Game {self.game_id}] Opening stream...")
         try:
             resp = self.client.stream_game(self.game_id)
-            while True:
+            for raw_line in resp.iter_lines(decode_unicode=True):
                 if not self._running:
                     break
-                raw = resp.readline()
-                if not raw:
-                    break
-                line = raw.decode("utf-8").strip()
+                if not raw_line:
+                    continue
+                line = raw_line.strip()
                 if not line:
                     continue
                 event = json.loads(line)
                 typ = event.get("type", "?")
                 moves_str = event.get("moves", "") or event.get("state", {}).get("moves", "")
-                print(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'", flush=True)
+                self._log(f"[Game {self.game_id}] Event: {typ} moves='{moves_str}'")
                 self._handle_event(event)
         except Exception as e:
             import traceback
-            print(f"[Game {self.game_id}] ERROR: {e}", flush=True)
-            traceback.print_exc()
+            self._log(f"[Game {self.game_id}] ERROR: {e}")
+            print(traceback.format_exc(), flush=True)
         finally:
             self._running = False
 
@@ -191,13 +200,13 @@ class GameHandler:
                 binc=my_binc,
             )
         except Exception as e:
-            print(f"[Game {self.game_id}] Engine error: {e}", flush=True)
+            self._log(f"[Game {self.game_id}] Engine error: {e}")
             import traceback
-            traceback.print_exc()
+            print(traceback.format_exc(), flush=True)
             return
 
         if bestmove:
-            print(f"[Game {self.game_id}] Engine chose {bestmove}", flush=True)
+            self._log(f"[Game {self.game_id}] Engine chose {bestmove}")
             try:
                 result = self.client.make_move(self.game_id, bestmove)
                 board = self._board()
@@ -208,11 +217,11 @@ class GameHandler:
                 except ValueError:
                     san = bestmove
                 self.moves_uci.append(bestmove)
-                print(f"[Game {self.game_id}] Move {bestmove} submitted", flush=True)
+                self._log(f"[Game {self.game_id}] Move {bestmove} submitted")
             except Exception as e:
                 import traceback
-                print(f"[Game {self.game_id}] Move failed: {e}", flush=True)
-                traceback.print_exc()
+                self._log(f"[Game {self.game_id}] Move failed: {e}")
+                print(traceback.format_exc(), flush=True)
 
     def _handle_game_finish(self, event: Dict[str, Any]) -> None:
         winner = event.get("winner")  # "white", "black", or None for draw
@@ -364,10 +373,12 @@ class LichessBot:
         while self._running:
             try:
                 resp = self.client.stream_events()
-                for line in resp:
+                for raw_line in resp.iter_lines(decode_unicode=True):
                     if not self._running:
                         break
-                    line = line.decode("utf-8").strip()
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
                     if not line:
                         continue
                     event = json.loads(line)
@@ -465,6 +476,7 @@ class LichessBot:
             binc,
             variant,
             rated,
+            self.state,
         )
         self.games[game_id] = handler
         self._current_game_id = game_id
