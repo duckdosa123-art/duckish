@@ -22,7 +22,7 @@ from .config import (
     MOVE_OVERHEAD_MS,
 )
 
-SEARCH_DEADLINE_S = 30  # hard cap on a single search
+SEARCH_DEADLINE_S = 10  # hard cap on a single search
 
 
 class Engine:
@@ -148,6 +148,7 @@ class Engine:
         btime: Optional[int] = None,
         winc: Optional[int] = None,
         binc: Optional[int] = None,
+        movetime: Optional[int] = None,
     ) -> Optional[str]:
         """Run search and return bestmove UCI.
 
@@ -174,6 +175,11 @@ class Engine:
                         parts.append(f"winc {winc}")
                     if binc is not None:
                         parts.append(f"binc {binc}")
+                    if movetime is not None:
+                        parts.append(f"movetime {movetime}")
+                    else:
+                        # Default: cap at 1000ms to prevent timeouts on long clocks
+                        parts.append("movetime 1000")
                     self._send(" ".join(parts))
 
                     deadline = time.monotonic() + SEARCH_DEADLINE_S
