@@ -222,20 +222,27 @@ class GameHandler:
         # Play the engine's RAW best move (like the analyzer). Single PV keeps
         # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
         # Experience is recorded for training but does not override engine choice.
-        try:
-            bestmove = self.engine.best_move(
-                self.moves_uci,
-                wtime=self.wtime,
-                btime=self.btime,
-                winc=self.winc,
-                binc=self.binc,
-                movetime=movetime,
-            )
-            if not bestmove:
+        bestmove = None
+        for search_try in range(4):
+            try:
+                bestmove = self.engine.best_move(
+                    self.moves_uci,
+                    wtime=self.wtime,
+                    btime=self.btime,
+                    winc=self.winc,
+                    binc=self.binc,
+                    movetime=movetime,
+                )
+            except Exception as e:
+                self._log(f"[Game {self.game_id}] Engine error (try {search_try + 1}/4): {e}")
                 bestmove = None
-        except Exception as e:
-            self._log(f"[Game {self.game_id}] Engine error: {e}")
-            bestmove = None
+            if bestmove:
+                break
+            # Brief backoff, then let best_move's own respawn logic recover the engine
+            time.sleep(0.5 * (search_try + 1))
+        if not bestmove:
+            self._log(f"[Game {self.game_id}] No move available from engine after 4 tries - skipping this turn")
+            return
 
         # Opening repertoire as a TIGHT tiebreak: only switch to a preferred
         # opening move if it is within 20cp of the engine's chosen move.
@@ -261,7 +268,7 @@ class GameHandler:
             if opening_pref and bestmove:
                 try:
                     # Only switch if a preferred move is among engine's near-equal candidates
-                    cands = self.engine.best_moves_multipv(self.moves_uci, movetime=movetime, multipv=3)
+                    cands = self.engine.best_moves_multipv(self.moves_uci, movetime=200, multipv=3)
                     if cands:
                         top_score = cands[0].get("score_cp", 0)
                         # Randomize among preferred moves within 20cp of the engine's top,
