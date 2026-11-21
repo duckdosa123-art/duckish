@@ -256,6 +256,18 @@ class GameHandler:
             check_count = sum(1 for m in legal if board_for_tm.gives_check(m))
             if piece_count >= 20 and check_count >= 3:
                 movetime = min(8000, int(movetime * 1.4))
+            # Endgame boost: fewer pieces = each move is more critical, so lock in
+            # and think deeper - but only when we have a healthy clock to spend.
+            if piece_count <= 12:
+                # Clock awareness: only boost if we have time to burn.
+                # Scale from 1.0x (low clock) up to 1.6x (lots of time).
+                if our_ms and our_ms >= 60000:          # >= 60s remaining
+                    if our_ms >= 180000:                # >= 3min: full lock-in
+                        movetime = min(10000, int(movetime * 1.6))
+                    elif our_ms >= 120000:              # >= 2min
+                        movetime = min(9000, int(movetime * 1.4))
+                    else:                               # 60-120s
+                        movetime = min(8000, int(movetime * 1.2))
         except Exception:
             pass
         bestmove = None
