@@ -322,12 +322,18 @@ class GameHandler:
                 move = chess.Move.from_uci(bestmove)
                 if board.is_legal(move):
                     board.push(move)
-                    would_repeat = self._position_counts.get(self._fen_key(board), 0) >= 2
+                    seen = self._position_counts.get(self._fen_key(board), 0)
                     board.pop()
+                    our_ms = self.wtime if self.color == "white" else self.btime
+                    their_ms = self.btime if self.color == "white" else self.wtime
+                    time_ahead_ms = (our_ms or 0) - (their_ms or 0)
+                    # If we're winning or well ahead on time, break the opponent's
+                    # repetition pattern at the SECOND occurrence: they need a third
+                    # to draw, so refusing to repeat now denies it to them.
+                    # (Game VHxxIZFl: up Queen for Rook, shuffled Kf2/Kg1 into a 3rd.)
+                    repeat_threshold = 1 if time_ahead_ms > 20_000 else 2
+                    would_repeat = seen >= repeat_threshold
                     if would_repeat:
-                        our_ms = self.wtime if self.color == "white" else self.btime
-                        their_ms = self.btime if self.color == "white" else self.wtime
-                        time_ahead_ms = (our_ms or 0) - (their_ms or 0)
 
                         # Get a wide set of engine candidates (with a safety cap).
                         cands = self.engine.best_moves_multipv(self.moves_uci, movetime=800, multipv=10)
