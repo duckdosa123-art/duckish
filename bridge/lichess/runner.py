@@ -288,15 +288,28 @@ class GameHandler:
                 elif ply == 4: opening_pref = {"f1g2", "d2d4", "b1c3"}
                 elif ply == 6: opening_pref = {"e1g1"}
             else:
+                # Black: MIRRORED Reti (King's Indian / reversed-KIA setup):
+                # Nf6, g6, Bg7, O-O with central control - the Black equivalent
+                # of White's Nf3/g3/Bg2/O-O Reti.
                 if ply == 1:
                     first = self.moves_uci[0] if self.moves_uci else ""
-                    if first == "e2e4": opening_pref = {"c7c5", "e7e5", "e7e6"}
-                    elif first == "d2d4": opening_pref = {"g8f6", "d7d5"}
-                    elif first == "c2c4": opening_pref = {"g8f6", "e7e5"}
-                    elif first == "g1f3": opening_pref = {"g8f6", "d7d5"}
-                elif ply == 3: opening_pref = {"b8c6", "g8f6", "e7e6", "d7d5", "g7g6"}
-                elif ply == 5: opening_pref = {"f8e7", "f8c5", "e8g8", "b8c6"}
-                elif ply == 7: opening_pref = {"e8g8", "f8e7"}
+                    if first == "e2e4":
+                        # vs 1.e4: e5 (or c5), then mirror the Reti with Nf6/g6/Bg7
+                        opening_pref = {"e7e5", "c7c5", "g8f6"}
+                    elif first in ("d2d4", "c2c4", "g1f3"):
+                        # vs 1.d4/1.c4/1.Nf3: 1...Nf6 (hypermodern center control)
+                        opening_pref = {"g8f6", "d7d5"}
+                    else:
+                        opening_pref = {"g8f6", "e7e5"}
+                elif ply == 3:
+                    # 2nd move: g6 or e6 preparing the fianchetto/center
+                    opening_pref = {"g7g6", "e7e6", "e7e5", "d7d5"}
+                elif ply == 5:
+                    # 3rd move: Bg7 fianchetto (the mirror of Bg2)
+                    opening_pref = {"f8g7", "b8c6", "d7d6"}
+                elif ply == 7:
+                    # 4th move: castle O-O (the mirror of White's O-O)
+                    opening_pref = {"e8g8", "f8g7", "b8c6"}
             if opening_pref and bestmove:
                 try:
                     # Only switch if a preferred move is among engine's near-equal candidates
