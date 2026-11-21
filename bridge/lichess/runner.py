@@ -280,9 +280,9 @@ class GameHandler:
             self._log(f"[Game {self.game_id}] No move available from engine after 4 tries - skipping this turn")
             return
 
-        # Opening repertoire as a TIGHT tiebreak: only switch to a preferred
-        # opening move if it is within 20cp of the engine's chosen move.
-        # This keeps the Reti/Indian/castling structure without weakening play.
+        # Opening repertoire as a SOFT tiebreak: switch to a preferred opening
+        # move only if it is within 25cp of the engine's best candidate in a
+        # MultiPV-5 search. Never forces an unsound move - engine has final say.
         if len(self.moves_uci) < 8:
             opening_pref = {}
             ply = len(self.moves_uci)
@@ -292,37 +292,51 @@ class GameHandler:
                 elif ply == 4: opening_pref = {"f1g2", "d2d4", "b1c3"}
                 elif ply == 6: opening_pref = {"e1g1"}
             else:
-                # Black: MIRRORED Reti (King's Indian / reversed-KIA setup):
-                # Nf6, g6, Bg7, O-O with central control - the Black equivalent
-                # of White's Nf3/g3/Bg2/O-O Reti.
+                # Black: COUNTERPLAY system (soft preferences, engine has final say).
+                # Sicilian vs 1.e4; Grunfeld-style central strike vs 1.d4/c4/Nf3.
                 if ply == 1:
                     first = self.moves_uci[0] if self.moves_uci else ""
                     if first == "e2e4":
-                        # vs 1.e4: e5 (or c5), then mirror the Reti with Nf6/g6/Bg7
-                        opening_pref = {"e7e5", "c7c5", "g8f6"}
-                    elif first in ("d2d4", "c2c4", "g1f3"):
-                        # vs 1.d4/1.c4/1.Nf3: 1...Nf6 (hypermodern center control)
-                        opening_pref = {"g8f6", "d7d5"}
+                        opening_pref = {"c7c5", "e7e5"}                # Sicilian primary, Open Game fallback
+                    elif first == "d2d4":
+                        opening_pref = {"g8f6", "d7d5"}                # ...Nf6 then Grunfeld ...d5
+                    elif first == "c2c4":
+                        opening_pref = {"e7e5", "g8f6"}                # reversed Sicilian
+                    elif first == "g1f3":
+                        opening_pref = {"d7d5", "g8f6"}                # retain center
                     else:
-                        opening_pref = {"g8f6", "e7e5"}
+                        opening_pref = {"e7e5", "d7d5"}
                 elif ply == 3:
-                    # 2nd move: g6 or e6 preparing the fianchetto/center
-                    opening_pref = {"g7g6", "e7e6", "e7e5", "d7d5"}
+                    # 2nd move: continue the counterplay structure
+                    first = self.moves_uci[0] if self.moves_uci else ""
+                    second = self.moves_uci[1] if len(self.moves_uci) > 1 else ""
+                    if first == "e2e4" and second == "c7c5":
+                        opening_pref = {"d7d6", "b8c6", "e7e6"}        # Sicilian: d6/Nc6/e6
+                    elif first == "d2d4" and second == "g8f6":
+                        opening_pref = {"g7g6", "d7d5", "e7e6"}        # Grunfeld/KID setup
+                    elif first == "d2d4" and second == "d7d5":
+                        opening_pref = {"c7c5", "g8f6", "e7e6"}        # QGD/Slav
+                    else:
+                        opening_pref = {"g8f6", "d7d5", "e7e5"}
                 elif ply == 5:
-                    # 3rd move: Bg7 fianchetto (the mirror of Bg2)
-                    opening_pref = {"f8g7", "b8c6", "d7d6"}
+                    # 3rd move: GRUNFELD central strike vs d4 — prefer ...d5 over pure fianchetto
+                    first = self.moves_uci[0] if self.moves_uci else ""
+                    if first == "d2d4":
+                        opening_pref = {"d7d5", "c7c5", "f8g7"}        # ...d5 = Grunfeld counter-strike
+                    else:
+                        opening_pref = {"g8f6", "f8g7", "b8c6", "d7d6"}
                 elif ply == 7:
-                    # 4th move: castle O-O (the mirror of White's O-O)
-                    opening_pref = {"e8g8", "f8g7", "b8c6"}
+                    # 4th move: develop/counterplay, castle if natural
+                    opening_pref = {"e8g8", "f8g7", "c7c5", "b8c6"}
             if opening_pref and bestmove:
                 try:
                     # Only switch if a preferred move is among engine's near-equal candidates
-                    cands = self.engine.best_moves_multipv(self.moves_uci, movetime=200, multipv=3)
+                    cands = self.engine.best_moves_multipv(self.moves_uci, movetime=250, multipv=5)
                     if cands:
                         top_score = cands[0].get("score_cp", 0)
-                        # Randomize among preferred moves within 20cp of the engine's top,
-                        # so Duckish varies its Reti/Indian openings instead of repeating one line.
-                        eligible = [c for c in cands if c.get("uci") in opening_pref and c.get("score_cp", -99999) >= top_score - 20]
+                        # Randomize among preferred moves within 25cp of the engine's top,
+                        # so Duckish varies its counterplay openings instead of repeating one line.
+                        eligible = [c for c in cands if c.get("uci") in opening_pref and c.get("score_cp", -99999) >= top_score - 25]
                         if eligible:
                             choice = random.choice(eligible)
                             bestmove = choice["uci"]
@@ -601,7 +615,7 @@ class LichessBot:
         self._auto_match_active = False
         self.match_config = MatchConfig.load()
         self._auto_match_rated = self.match_config.rated
-        self._accept_challenges = True
+        self._accept_challenges = self.match_config.accept_challenges
         self._auto_match_thread: Optional[threading.Thread] = None
         self._current_game_id: Optional[str] = None
         self._current_game_info: Optional[Dict[str, Any]] = None

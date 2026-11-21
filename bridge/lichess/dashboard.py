@@ -320,7 +320,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <label for="toggleRated">Rated</label>
 </div>
 <div class="control-group toggle">
-<input type="checkbox" id="toggleChallenges" checked>
+<input type="checkbox" id="toggleChallenges">
 <label for="toggleChallenges">Accept Challenges</label>
 </div>
 <div class="control-group toggle">
