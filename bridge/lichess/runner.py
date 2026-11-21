@@ -357,7 +357,14 @@ class GameHandler:
                         # 2) If no candidate qualifies and we're ahead on time and not losing,
                         #    shuffle with a SAFE non-repeating move: pawn pushes first (they also
                         #    reset the 50-move clock), then king moves away from attacked squares.
-                        if replacement is None and time_ahead_ms > 30_000 and top_score >= -50:
+                        # A blind shuffle is only safe in a near-pawn endgame with no
+                        # queens on the board. In the middlegame an arbitrary pawn push
+                        # can hang the queen (real blunder: 48...Qe4 49.Re1 f6?? 50.Rxe4).
+                        piece_map = board.piece_map()
+                        total_pieces = len(piece_map)
+                        has_queen = any(p.piece_type == chess.QUEEN for p in piece_map.values())
+                        endgame_safe = (total_pieces <= 10) and not has_queen
+                        if replacement is None and time_ahead_ms > 30_000 and top_score >= -50 and endgame_safe:
                             safe = []
                             for lm in board.legal_moves:
                                 board.push(lm)
@@ -366,6 +373,19 @@ class GameHandler:
                                     chess.BLACK if self.color == "white" else chess.WHITE,
                                     lm.to_square,
                                 )
+                                # Do not hang the piece we're moving: if the destination
+                                # is attacked and undefended, skip this move.
+                                dest_attacked = board.is_attacked_by(
+                                    chess.BLACK if self.color == "white" else chess.WHITE,
+                                    lm.to_square,
+                                )
+                                dest_defended = board.is_attacked_by(
+                                    chess.WHITE if self.color == "white" else chess.BLACK,
+                                    lm.to_square,
+                                )
+                                if dest_attacked and not dest_defended:
+                                    board.pop()
+                                    continue
                                 board.pop()
                                 if rep or attacked:
                                     continue
