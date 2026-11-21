@@ -1120,10 +1120,12 @@ impl Board {
 
     /// Makes a guess about the new position key after a move.
     /// This is a cheap estimate, and will fail for special moves such as castling.
-    pub fn key_after(&self, m: Move) -> u64 {
+    /// Returns None if the move is malformed (e.g. an empty from-square), so that
+    /// callers never panic on an unvalidated TT move.
+    pub fn key_after(&self, m: Move) -> Option<u64> {
         let src = m.from();
         let tgt = m.to();
-        let piece = self.state.mailbox[src].unwrap();
+        let piece = self.state.mailbox[src]?;
         let captured = self.state.mailbox[tgt];
         let is_pawn = piece.piece_type() == PieceType::Pawn;
         let src_piece = piece;
@@ -1144,10 +1146,10 @@ impl Board {
         let new_hmc = if captured.is_some() || is_pawn {
             0
         } else {
-            self.state.fifty_move_counter + 1
+            self.state.fifty_move_counter.saturating_add(1)
         };
 
-        new_key ^ HM_CLOCK_KEYS[new_hmc as usize]
+        Some(new_key ^ HM_CLOCK_KEYS[new_hmc as usize])
     }
 
     pub fn key_after_null_move(&self) -> u64 {
@@ -1741,7 +1743,7 @@ mod tests {
         use crate::chess::types::Square;
         let mut board = Board::startpos();
         let mv = Move::new(Square::E2, Square::E3);
-        let key = board.key_after(mv);
+        let key = board.key_after(mv).unwrap();
         board.make_move_simple(mv);
         assert_eq!(board.state.keys.zobrist, key);
     }
@@ -1756,7 +1758,7 @@ mod tests {
                 .unwrap();
         // Nxf7!!
         let mv = Move::new(Square::G5, Square::F7);
-        let key = board.key_after(mv);
+        let key = board.key_after(mv).unwrap();
         board.make_move_simple(mv);
         assert_eq!(board.state.keys.zobrist, key);
     }

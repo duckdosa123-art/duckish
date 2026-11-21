@@ -881,7 +881,7 @@ pub fn quiescence<NT: NodeType>(t: &mut ThreadData, mut alpha: i32, beta: i32) -
     let futility = stand_pat + t.info.conf.qs_futility;
 
     while let Some(m) = move_picker.next(t) {
-        t.cache.prefetch(t.board.key_after(m));
+        if let Some(k) = t.board.key_after(m) { t.cache.prefetch(k); }
         if !t.board.is_legal(m) {
             continue;
         }
@@ -1300,18 +1300,12 @@ pub fn alpha_beta<NT: NodeType>(
         let iid_depth = depth - 1;
         alpha_beta::<OffPV>(t, iid_depth, alpha, beta, cut_node);
         // Re-probe the cache; the IID search may have populated it.
-        if let Some(hit) = t.cache.probe(key, height, clock) {
-            let illegal = hit
-                .mov
-                .is_some_and(|m| !t.board.is_pseudo_legal(m) || !t.board.is_legal(m));
-            if !illegal {
-                // Update tt_move and tt_capture from the IID result.
-                // Note: we don't early-return here even if the IID hit would cut off,
-                // because the IID search was at reduced depth.
-            }
-        }
-        // Refresh tt_move/tt_capture from cache after IID.
-        tt_move = t.cache.probe(key, height, clock).and_then(|e| e.mov);
+        // Refresh tt_move/tt_capture from cache after IID, validating that the
+        // TT move is pseudo-legal and legal before using it (an unvalidated move
+        // would reach key_after() and panic on an empty from-square).
+        tt_move = t.cache.probe(key, height, clock)
+            .and_then(|e| e.mov)
+            .filter(|m| t.board.is_pseudo_legal(*m) && t.board.is_legal(*m));
         tt_capture = tt_move.filter(|m| t.board.is_tactical(*m));
     }
 
@@ -1461,7 +1455,7 @@ pub fn alpha_beta<NT: NodeType>(
         let mut move_picker = MovePicker::new(tt_capture, None, see_pivot);
         move_picker.skip_quiets = true;
         while let Some(m) = move_picker.next(t) {
-            t.cache.prefetch(t.board.key_after(m));
+            if let Some(k) = t.board.key_after(m) { t.cache.prefetch(k); }
             if !t.board.is_legal(m) {
                 continue;
             }
@@ -1633,7 +1627,7 @@ pub fn alpha_beta<NT: NodeType>(
             }
         }
 
-        t.cache.prefetch(t.board.key_after(m));
+        if let Some(k) = t.board.key_after(m) { t.cache.prefetch(k); }
         if !t.board.is_legal(m) {
             continue;
         }
