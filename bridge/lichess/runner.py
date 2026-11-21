@@ -245,9 +245,17 @@ class GameHandler:
             base = 1000
         movetime = base
         try:
-            board_for_cap = self._board()
-            if any(board_for_cap.is_capture(m) for m in board_for_cap.legal_moves):
-                movetime = min(8000, int(movetime * 1.5))  # gentler capture boost
+            board_for_tm = self._board()
+            legal = list(board_for_tm.legal_moves)
+            # Capture boost: tactical capture-available positions get more time.
+            if any(board_for_tm.is_capture(m) for m in legal):
+                movetime = min(8000, int(movetime * 1.5))
+            # Complexity boost: sharp middlegames (many pieces + several checks)
+            # get extra thinking time - this is where games turn.
+            piece_count = len(board_for_tm.piece_map())
+            check_count = sum(1 for m in legal if board_for_tm.gives_check(m))
+            if piece_count >= 20 and check_count >= 3:
+                movetime = min(8000, int(movetime * 1.4))
         except Exception:
             pass
 
