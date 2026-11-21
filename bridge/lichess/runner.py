@@ -239,8 +239,25 @@ class GameHandler:
         # Play the engine's RAW best move (like the analyzer). Single PV keeps
         # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
         # Experience is recorded for training but does not override engine choice.
-        # No Python-side movetime: the engine's own time manager sizes each move
-        # from the real clocks (stability, subtree, forced moves, fail-low bonus).
+        # Hard-cap each search: fast moves, no flag risk, and stays below the
+        # engine's depth-30 crash threshold. Scale modestly with the clock.
+        our_ms = self.wtime if self.color == "white" else self.btime
+        try:
+            base = max(1000, min(5000, int((our_ms or 60000) / 40)))
+        except Exception:
+            base = 1000
+        movetime = base
+        try:
+            board_for_tm = self._board()
+            legal = list(board_for_tm.legal_moves)
+            if any(board_for_tm.is_capture(m) for m in legal):
+                movetime = min(8000, int(movetime * 1.5))
+            piece_count = len(board_for_tm.piece_map())
+            check_count = sum(1 for m in legal if board_for_tm.gives_check(m))
+            if piece_count >= 20 and check_count >= 3:
+                movetime = min(8000, int(movetime * 1.4))
+        except Exception:
+            pass
         bestmove = None
         for search_try in range(4):
             try:
@@ -250,6 +267,7 @@ class GameHandler:
                     btime=self.btime,
                     winc=self.winc,
                     binc=self.binc,
+                    movetime=movetime,
                 )
             except Exception as e:
                 self._log(f"[Game {self.game_id}] Engine error (try {search_try + 1}/4): {e}")
