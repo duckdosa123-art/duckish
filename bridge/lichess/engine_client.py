@@ -184,13 +184,13 @@ class Engine:
     ) -> Optional[str]:
         """Run search and return bestmove UCI.
 
-        A movetime cap is always applied, whether or not real clocks are sent.
-        When both wtime and btime are supplied, real clocks are sent too, so the
-        engine's Polyglot book and its own time manager activate; the movetime cap
-        then hard-caps the search (engine limits are conjunctive). Without real
-        clocks a fixed movetime is used. wtime/btime/winc/binc are buffered by
-        MOVE_OVERHEAD_MS so we never flag on network latency. One respawn retry
-        on transport failure.
+        When both wtime and btime are supplied, real clocks are sent and the
+        engine's own time manager decides how long to think (stability, subtree
+        sizing, forced-move detection, fail-low bonus). No movetime is sent in
+        that case, since a movetime cap would override those dynamic windows.
+        Without real clocks a fixed movetime is used (tests/analysis fallback).
+        wtime/btime/winc/binc are buffered by MOVE_OVERHEAD_MS so we never flag
+        on network latency. One respawn retry on transport failure.
         """
         for attempt in range(2):
             try:
@@ -209,24 +209,26 @@ class Engine:
                         pos_cmd += " moves " + " ".join(moves_uci)
                     self._send(pos_cmd)
 
-                    # Use real clocks when available: this activates Polyglot book
-                    # probing and the engine's own time manager. `go movetime` skips the book.
-                    cap_ms = movetime if movetime is not None else 1000
                     if wtime is not None and btime is not None:
-                        # Real clocks keep Limits::Dynamic alive so the Polyglot book is
-                        # probed (src/search.rs:242), while movetime hard-caps the search
-                        # (limits are conjunctive, timemgmt.rs:296-299). Without the movetime
-                        # cap the engine's own time manager burns the whole clock.
+                        # Real clocks: let the engine's own time manager decide
+                        # (stability, subtree, forced moves, fail-low bonus). Do NOT
+                        # send movetime - it would override the dynamic time windows
+                        # and make the engine think a fixed flat duration.
                         wt = max(0, wtime - MOVE_OVERHEAD_MS)
                         bt = max(0, btime - MOVE_OVERHEAD_MS)
-                        go_cmd = f"go wtime {wt} btime {bt} movetime {cap_ms}"
+                        go_cmd = f"go wtime {wt} btime {bt}"
                         if winc is not None:
                             go_cmd += f" winc {winc}"
                         if binc is not None:
                             go_cmd += f" binc {binc}"
                         self._send(go_cmd)
-                        deadline = time.monotonic() + (cap_ms / 1000.0) + 5.0
+                        # Generous read deadline: the engine's own hard window is ~46%
+                        # of clock, so allow plenty of time but keep a 120s safety ceiling.
+                        deadline = time.monotonic() + min(120.0, max(20.0, (max(wtime, btime) / 1000.0) * 0.6 + 15.0))
                     else:
+                        # No clocks: fixed movetime fallback (e.g. when called from
+                        # tests/analysis).
+                        cap_ms = movetime if movetime is not None else 1000
                         self._send(f"go movetime {cap_ms}")
                         deadline = time.monotonic() + max(SEARCH_DEADLINE_S, (cap_ms / 1000.0) + 5.0)
 
