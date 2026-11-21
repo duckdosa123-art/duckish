@@ -51,7 +51,8 @@ def load_dotenv_token(path: str = os.path.join(REPO_ROOT, ".env")) -> Optional[s
 # ---- Engine / API constants -------------------------------------------------
 
 DEFAULT_HASH_MB = 256
-CONTEMPT = 50  # positive = play on in drawn positions instead of taking the draw
+CONTEMPT = 0  # 0 = neutral; positive contempt makes the engine decline draws
+              # and grab material in equal endgames, which loses vs stronger bots.
 DEFAULT_THREADS = max(1, (os.cpu_count() or 2) // 2)
 BOOK_PATH = os.environ.get("DUCKISH_BOOK_PATH", "")
 if not BOOK_PATH:

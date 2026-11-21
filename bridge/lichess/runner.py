@@ -236,17 +236,18 @@ class GameHandler:
         if not self._running:
             return
 
-        # Base time per move. Captures get a deeper search because trades are
-        # where a position can turn into a lost endgame — the extra depth lets
-        # the engine see tablebase-verified bad results before committing.
-        movetime = 1000
+        # Scale thinking time with our remaining clock: ~1s in blitz, up to ~5s
+        # when we have lots of time (rapid). Never burn more than ~8% of the clock.
+        our_ms = self.wtime if self.color == "white" else self.btime
+        try:
+            base = max(1000, min(5000, int((our_ms or 60000) / 40)))
+        except Exception:
+            base = 1000
+        movetime = base
         try:
             board_for_cap = self._board()
-            # A capture move lands on a square occupied by an opponent piece
-            # (or is an en-passant capture). Check the move that just happened
-            # from our move list, plus whether any legal capture is available.
             if any(board_for_cap.is_capture(m) for m in board_for_cap.legal_moves):
-                movetime = 2500
+                movetime = min(8000, int(movetime * 1.5))  # gentler capture boost
         except Exception:
             pass
 
