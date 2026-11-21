@@ -779,6 +779,16 @@ class LichessBot:
             self.client.decline_challenge(challenge_id, "timecontrol")
             return
 
+        # Decline speeds the user disabled (e.g. bullet is bad for our time management)
+        allowed = self.match_config.allowed_speed_set()
+        if speed not in allowed:
+            self._log_event(f"  -> Declining: speed {speed} not in allowed speeds {sorted(allowed)}")
+            try:
+                self.client.decline_challenge(challenge_id, "timecontrol")
+            except Exception:
+                pass
+            return
+
         # Accept!
         self._log_event(f"  -> Accepting challenge from {challenger}")
         try:
