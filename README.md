@@ -22,7 +22,7 @@ Duckish is a fork of Viridithas with the following enhancements:
 
 - Duckish supports Syzygy endgame tablebases via the `SyzygyPath` UCI option (probe limits `SyzygyProbeLimit` default 7, `SyzygyProbeDepth`).
 - Download the 3-4-5 man WDL+DTZ tables with `python bridge/download_syzygy.py` (~938 MB, ~290 files into `syzygy/`). The bot auto-detects `syzygy/` and sets `SyzygyPath` automatically.
-- **Requires the engine built with tablebase support:** use `cargo build --release --features syzygy` or `make final-release`. A plain `cargo build --release` does **not** include tablebases.
+- **Requires the engine built with tablebase support:** use `cargo build --release --features syzygy`, or the PGO build `make native` (which compiles `--features final-release`, and `final-release` includes `syzygy`). A plain `cargo build --release` does **not** include tablebases.
 - Caveat: perfect play only for positions with <= 5 pieces; measured gain is roughly +2 to +9 Elo. Correctness, not magic.
 
 ### Honest technical caveats
@@ -83,7 +83,7 @@ A modular `bridge/lichess/` package:
 - `api.py` - Lichess HTTP client (urllib / requests).
 - `engine_client.py` - persistent UCI engine wrapper (single-PV fast search, generous read deadline, hash persistence across moves with no `ucinewgame` mid-game; MultiPV 3 available for experience analysis).
 - `runner.py` - event stream, challenge handling, game loop, auto-match with cooldowns.
-- `dashboard.py` - live control dashboard (dark mode, auto-match controls, activity console).
+- `dashboard.py` - live control dashboard (dark mode, auto-match controls, match settings, activity console).
 - `bridge/lichess_bot.py` - CLI entry point.
 
 CLI flags:
@@ -97,9 +97,13 @@ CLI flags:
 
 Dashboard at `http://127.0.0.1:5001` with:
 
-- Online status badge and live phase/detail.
+- Online status badge and live phase/detail, plus a **Tablebases status indicator** (Loaded/Missing) in the Bot Status card.
 - Start/Stop Auto-Match (fetches up to 30 online bots; cooldowns for rate-limited or declined opponents).
-- "Accept Challenges" toggle checkbox - control when the bot receives/accepts incoming challenges (declines them when off).
+- **Auto-match filtering:** only opponents with games in the selected speed are considered, and the ELO range (`ELO min` / `ELO max`) filters candidates; bots that are ToS-violating or disabled are skipped.
+- **Speed toggles** for the speeds Duckish will accept (Bullet / Blitz / Rapid checkboxes; Blitz and Rapid are on by default, Bullet off).
+- **Match Settings card:** speed, time control (limit minutes + increment), and ELO range, persisted to `settings.json` (`bridge/lichess/settings.json`).
+- "Accept Challenges" toggle checkbox - control when the bot receives/accepts incoming challenges (declines them when off). **Default OFF.**
+- "Restart Engine" button - respawns the UCI engine process without restarting the bot.
 - Manual challenge input.
 - Live activity console (last 50 events).
 - Watch Live on Lichess link.
@@ -107,10 +111,13 @@ Dashboard at `http://127.0.0.1:5001` with:
 
 ### Play strength & openings
 
-- The bot uses the **same engine binary and NNUE as the analyzer** (`target/release/duckish.exe`) - identical network weights. Only the bridge settings differ.
+- The bot uses the **same engine binary and NNUE as the analyzer** (`target/release/duckish.exe`) - identical network weights. Only the bridge settings differ. Prefer the **PGO build with Syzygy compiled in** (`make native`, which uses `--features final-release`) for full strength and endgame tablebase support.
 - The bot plays the engine's **raw best move** (single-PV search), keeping Lazy SMP fully active for maximum strength - the same move the analyzer's arrow shows.
 - Search uses a short fixed **1000 ms movetime** (matching the analyzer's fast analysis) - no broken clock math.
-- **Opening repertoire as a tight tiebreak:** Reti/Zukertort as White (1.Nf3, 2.c4/g3, 3.Bg2, 4.O-O) and Indian defenses as Black (1...Nf6 vs d4/c4/Nf3, 1...c5/e5/e6 vs e4), plus castling preference. Preferred moves are only chosen when within **20cp** of the engine's top choice - never override a clearly better move.
+- **Time-of-move boosts:** capture positions get a **1.5x** movetime boost, complex middlegames (>= 20 pieces and >= 3 checking moves) a **1.4x** boost.
+- **Clock-aware endgame lock-in:** with <= 12 pieces and at least 60s on the clock, the bot thinks longer - scaling from 1.2x (60-120s) up to a full **1.6x / 10s** cap (at >= 3min remaining). Low on time, it does not boost.
+- **Opening repertoire as a soft tiebreak:** White keeps a Reti/Zukertort setup (1.Nf3, 2.c4/g3/d4, 3.Bg2/d4/Nc3, 4.O-O). Black plays a **counterplay system** rather than a mirror: the **Sicilian (1...c5) vs 1.e4**, a **Grünfeld-style ...d5 central strike vs 1.d4**, **...e5 vs 1.c4**, and **...d5 vs 1.Nf3**. These are **soft preferences only** - a preferred move is chosen only when it is within **25cp** of the engine's top candidate (MultiPV-5); the engine always has the final say, and Duckish randomizes among the near-equal preferred moves so it varies its openings.
+- **Threefold-repetition guard:** when ahead on time the bot refuses to repeat into a draw, breaking the cycle with a strong non-repeating alternative (or, in safe near-pawn endgames, a safe pawn/king shuffle) instead of allowing the opponent's repetition.
 
 Token loading priority: `--token` > `LICHESS_TOKEN` env var > `.env` file.
 
@@ -119,6 +126,20 @@ Run (from the repo root):
 ```bash
 python -m bridge.lichess_bot
 ```
+
+### Tools & testing
+
+- **`bridge/engine_match.py`** - a local engine-vs-engine match that pits the **analyzer policy** (`bridge/server.py` recipe: MultiPV 3, 400ms, raw bestmove) against the **bot policy** (`runner.py` `_make_move`: clock-scaled movetime, opening tiebreak, repetition guard) driving two independent `duckish.exe` subprocesses. Plays a 3-game match (alternating colors), with a live viewer on `http://127.0.0.1:5002` (board, move list with policy/eval/think time, running score, PGN) that stays up after the match. PGNs are written to `bridge/match_pgns/game_N.pgn` plus `match_summary.json`.
+
+  ```bash
+  python bridge/engine_match.py
+  ```
+
+- **Test suites** (plain-Python, print PASS/FAIL):
+  - `bridge/test_experience.py` - unit tests for `ExperienceStore` (position/move roundtrips, blunder and bonus thresholds, mate-score normalization).
+  - `bridge/test_lichess_sim.py` - end-to-end simulation against a mock Lichess Bot API and scripted mock engine (no network, no real engine).
+  - `bridge/test_opening_counterplay.py` - proves the Black counterplay tiebreak fires (Sicilian / Grünfeld within 25cp), that the >25cp safety valve keeps the engine's best move, and that White's Reti preferences still fire.
+  - `bridge/test_lichess_regressions.py` - regressions for engine output isolation and legal move submission.
 
 ## 6. Chess.com & Lichess Analysis Overlay
 
@@ -144,6 +165,10 @@ Setup:
 ```bash
 cargo build --release
 ```
+
+For full strength use the **PGO build** (`make native`), which compiles with `--features final-release` (this includes `syzygy`, so endgame tablebases are compiled in). A plain `cargo build --release` does **not** include tablebase support - to add just tablebases use `cargo build --release --features syzygy`.
+
+Then download the tablebases (optional, ~938 MB): `python bridge/download_syzygy.py`. The bot auto-detects `syzygy/` and sets `SyzygyPath`.
 
 Download `viridithas.nnue.zst` from the [viridithas-networks](https://github.com/cosmobobak/viridithas-networks/releases) releases and place it in the repo root.
 
@@ -173,10 +198,16 @@ duckish/
 ├── bridge/
 │   ├── server.py            # HTTP bridge: /analyze, /health, /experience
 │   ├── experience.py        # SQLite mistake-learning book
+│   ├── engine_match.py      # analyzer-vs-bot match runner + viewer (port 5002)
+│   ├── download_syzygy.py   # 3-4-5 man tablebase downloader
 │   ├── requirements.txt     # python-chess, requests
+│   ├── test_experience.py   # ExperienceStore unit tests
+│   ├── test_lichess_sim.py  # mock-Lichess end-to-end simulation
+│   ├── test_opening_counterplay.py  # opening counterplay tiebreak tests
+│   ├── test_lichess_regressions.py  # output isolation / move-submission regressions
 │   ├── lichess_bot.py       # Lichess bot CLI entry point
 │   └── lichess/
-│       ├── config.py        # token loading, paths, BotState
+│       ├── config.py        # token loading, paths, MatchConfig, BotState
 │       ├── api.py           # Lichess HTTP client
 │       ├── engine_client.py # persistent UCI engine wrapper
 │       ├── runner.py        # event stream, game loop, auto-match
