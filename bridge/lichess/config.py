@@ -81,13 +81,15 @@ class MatchConfig:
     elo_max: int = 0            # 0 = no upper bound
     allowed_speeds: str = "blitz,rapid"   # comma-separated speeds Duckish will accept
     accept_challenges: bool = False   # off by default - user controls when challenges are accepted
+    preferred_color: str = "white"   # white | black | random
 
     def to_dict(self):
         return {"speed": self.speed, "limit_min": self.limit_min,
                 "increment": self.increment, "rated": self.rated,
                 "elo_min": self.elo_min, "elo_max": self.elo_max,
                 "allowed_speeds": self.allowed_speeds,
-                "accept_challenges": self.accept_challenges}
+                "accept_challenges": self.accept_challenges,
+                "preferred_color": self.preferred_color}
 
     @classmethod
     def from_dict(cls, d):
@@ -100,6 +102,7 @@ class MatchConfig:
             elo_max=int(d.get("elo_max", 0)),
             allowed_speeds=str(d.get("allowed_speeds", "blitz,rapid")),
             accept_challenges=bool(d.get("accept_challenges", False)),
+            preferred_color=str(d.get("preferred_color", "white")) if d.get("preferred_color", "white") in ("white", "black", "random") else "white",
         )
 
     def allowed_speed_set(self):

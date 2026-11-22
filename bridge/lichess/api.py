@@ -111,12 +111,14 @@ class LichessClient:
         clock_increment: int = 2,
         variant: str = "standard",
         rated: bool = True,
+        color: str = "white",
     ) -> Dict[str, Any]:
         data = {
             "clock.limit": clock_limit,
             "clock.increment": clock_increment,
             "variant": variant,
             "rated": rated,
+            "color": color if color in ("white", "black", "random") else "white",
         }
         resp = self._request("POST", f"/challenge/{username}", data)
         return json.loads(resp.read().decode("utf-8"))

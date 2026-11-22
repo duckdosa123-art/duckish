@@ -686,7 +686,7 @@ class LichessBot:
         tc_str = f"{self.match_config.limit_min}+{self.match_config.increment}"
         self._set_phase("CHALLENGING", f"Challenging {username} ({tc_str} {'Rated' if rated else 'Casual'} Standard)...", target_bot=username)
         try:
-            result = self.client.challenge_user(username, clock_limit=clock_limit, clock_increment=clock_increment, rated=rated)
+            result = self.client.challenge_user(username, clock_limit=clock_limit, clock_increment=clock_increment, rated=rated, color=self.match_config.preferred_color)
             challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
             self._set_phase("WAITING_REPLY", f"Waiting for {username} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=username)
             self._log_event(f"Challenge sent to {username}")
@@ -1070,7 +1070,7 @@ class LichessBot:
                 tc_str = f"{self.match_config.limit_min}+{self.match_config.increment}"
                 self._set_phase("CHALLENGING", f"Challenging {opponent} ({tc_str} {'Rated' if self._auto_match_rated else 'Casual'} Standard)...", target_bot=opponent)
                 try:
-                    result = self.client.challenge_user(opponent, clock_limit=self.match_config.limit_min * 60, clock_increment=self.match_config.increment, rated=self._auto_match_rated)
+                    result = self.client.challenge_user(opponent, clock_limit=self.match_config.limit_min * 60, clock_increment=self.match_config.increment, rated=self._auto_match_rated, color=self.match_config.preferred_color)
                     challenge_id = result.get("challenge", {}).get("id") if isinstance(result.get("challenge"), dict) else None
                     self._set_phase("WAITING_REPLY", f"Waiting for {opponent} to accept (challenge {challenge_id}, 10s timeout)...", challenge_id=challenge_id, target_bot=opponent)
                     self._log_event(f"Challenge sent to {opponent}")

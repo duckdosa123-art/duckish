@@ -369,6 +369,14 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <label for="cfgEloMax">ELO max</label>
 <input type="number" id="cfgEloMax" min="0" max="4000" value="0">
 </div>
+<div class="control-group">
+<label for="cfgColor">Play as</label>
+<select id="cfgColor">
+<option value="white" selected>White</option>
+<option value="black">Black</option>
+<option value="random">Random</option>
+</select>
+</div>
 </div>
 </div>
 <div class="card console-card">
@@ -385,7 +393,7 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 const $ = (s) => document.querySelector(s);
 const log = (msg, cls='') => { const el=document.createElement('div'); el.className='log-entry'+(cls?' '+cls:''); el.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="log-msg">${msg}</span>`; $('#challengeLog').prepend(el); };
 let autoMatchActive = false;
-function matchConfig(){ return {speed:$('#cfgSpeed').value, limit_min:parseInt($('#cfgLimit').value||3), increment:parseInt($('#cfgInc').value||2), rated:$('#toggleRated').checked, elo_min:parseInt($('#cfgEloMin').value||0), elo_max:parseInt($('#cfgEloMax').value||0), allowed_speeds:allowedSpeeds()}; }
+function matchConfig(){ return {speed:$('#cfgSpeed').value, limit_min:parseInt($('#cfgLimit').value||3), increment:parseInt($('#cfgInc').value||2), rated:$('#toggleRated').checked, elo_min:parseInt($('#cfgEloMin').value||0), elo_max:parseInt($('#cfgEloMax').value||0), preferred_color:$('#cfgColor').value, allowed_speeds:allowedSpeeds()}; }
 function allowedSpeeds(){
   var a=[]; if($('#cfgSpeedBullet').checked)a.push('bullet'); if($('#cfgSpeedBlitz').checked)a.push('blitz'); if($('#cfgSpeedRapid').checked)a.push('rapid');
   return a.length ? a.join(',') : 'blitz';
@@ -417,6 +425,7 @@ if(d.match_config){
  if(active!==$('#cfgInc')) $('#cfgInc').value=mc.increment!=null?mc.increment:2;
  if(active!==$('#cfgEloMin')) $('#cfgEloMin').value=mc.elo_min!=null?mc.elo_min:0;
  if(active!==$('#cfgEloMax')) $('#cfgEloMax').value=mc.elo_max!=null?mc.elo_max:0;
+ if(active!==$('#cfgColor')) $('#cfgColor').value = (d.match_config && d.match_config.preferred_color) || 'white';
  const allowed = (d.match_config && d.match_config.allowed_speeds ? d.match_config.allowed_speeds : 'blitz,rapid').split(',');
  $('#cfgSpeedBullet').checked = allowed.indexOf('bullet') >= 0;
  $('#cfgSpeedBlitz').checked = allowed.indexOf('blitz') >= 0;
