@@ -253,9 +253,10 @@ class GameHandler:
             if any(board_for_tm.is_capture(m) for m in legal):
                 movetime = min(8000, int(movetime * 1.5))
             piece_count = len(board_for_tm.piece_map())
-            check_count = sum(1 for m in legal if board_for_tm.gives_check(m))
-            if piece_count >= 20 and check_count >= 3:
-                movetime = min(8000, int(movetime * 1.4))
+            if piece_count >= 20:
+                # Middlegame (many pieces): think a bit longer on every move,
+                # not only in positions with 3+ checks (that gate was too tight).
+                movetime = min(8000, int(movetime * 1.3))
             # Endgame boost: fewer pieces = each move is more critical, so lock in
             # and think deeper - but only when we have a healthy clock to spend.
             if piece_count <= 12:
@@ -463,23 +464,26 @@ class GameHandler:
             try:
                 move = chess.Move.from_uci(bestmove)
                 if not board.is_legal(move):
-                    self._log(f"[Game {self.game_id}] Illegal move: {bestmove}, trying next candidate")
-                    # Try next candidate from adjusted multipv list
-                    found_legal = False
-                    if 'adjusted' in dir() and adjusted and len(adjusted) > 1:
-                        for candidate in adjusted[1:]:
+                    self._log(f"[Game {self.game_id}] Illegal move: {bestmove}, seeking legal alternative")
+                    try:
+                        cands = self.engine.best_moves_multipv(self.moves_uci, movetime=500, multipv=5)
+                        replacement = None
+                        for c in cands:
+                            alt = c.get("uci", "")
                             try:
-                                alt_move = chess.Move.from_uci(candidate.get('uci', ''))
+                                alt_move = chess.Move.from_uci(alt)
                                 if board.is_legal(alt_move):
-                                    bestmove = candidate['uci']
+                                    replacement = alt
                                     move = alt_move
-                                    found_legal = True
-                                    self._log(f"[Game {self.game_id}] Using alternative: {bestmove}")
+                                    bestmove = alt
                                     break
-                            except (ValueError, KeyError):
+                            except ValueError:
                                 continue
-                    if not found_legal:
-                        self._log(f"[Game {self.game_id}] No legal alternative found, skipping move")
+                        if replacement is None:
+                            self._log(f"[Game {self.game_id}] No legal alternative found, skipping move")
+                            return
+                    except Exception as e:
+                        self._log(f"[Game {self.game_id}] Alternative search failed: {e}")
                         return
                 san = board.san(move)
                 board.push(move)
