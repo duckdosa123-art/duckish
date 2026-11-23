@@ -72,6 +72,32 @@ body {
   color: var(--heading);
 }
 
+.masthead__title {
+  display: flex;
+  align-items: flex-end;
+  gap: clamp(0.75rem, 2.5vw, 1.25rem);
+}
+
+.duck-mark {
+  display: block;
+  flex: none;
+  width: clamp(2.5rem, 5.5vw, 3.5rem);
+  color: var(--accent);
+  line-height: 0;
+}
+
+.duck-bob,
+.duck-svg {
+  display: block;
+  transform-origin: 50% 88%;
+}
+
+.duck-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
 .tagline {
   margin: 0;
   font-family: var(--font-mono);

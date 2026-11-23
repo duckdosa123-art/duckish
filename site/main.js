@@ -1,13 +1,28 @@
 (function () {
   "use strict";
 
+  var reduceMotion = false;
+  try {
+    reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  } catch (error) {
+    reduceMotion = false;
+  }
+
+  /* motion is filled in by loadAnimations(); null means "animate nothing". */
+  var motion = null;
+
+  /* ------------------------------------------------------------- status --- */
+
   var statusDot = document.getElementById("status-dot");
   var statusText = document.getElementById("status-text");
+  var statusState = "unavailable";
+  var dotPulse = null;
 
   function setStatus(state) {
     if (!statusDot || !statusText) {
       return;
     }
+    statusState = state;
     statusDot.classList.remove("is-online", "is-offline");
     if (state === "online") {
       statusDot.classList.add("is-online");
@@ -17,6 +32,26 @@
       statusText.textContent = "offline";
     } else {
       statusText.textContent = "status unavailable";
+    }
+    syncStatusPulse();
+  }
+
+  function syncStatusPulse() {
+    if (!statusDot || !motion) {
+      return;
+    }
+    if (dotPulse && typeof dotPulse.stop === "function") {
+      dotPulse.stop();
+    }
+    dotPulse = null;
+    statusDot.style.transform = "";
+    statusDot.style.opacity = "";
+    if (statusState === "online") {
+      dotPulse = motion.animate(
+        statusDot,
+        { scale: [1, 1.4, 1], opacity: [1, 0.55, 1] },
+        { duration: 2.6, repeat: Infinity, ease: "easeInOut" }
+      );
     }
   }
 
@@ -43,6 +78,8 @@
         setStatus("unavailable");
       });
   }
+
+  /* --------------------------------------------------------- challenge --- */
 
   var form = document.getElementById("challenge-form");
   var minutesInput = document.getElementById("minutes");
@@ -88,8 +125,16 @@
   }
 
   function updatePreview() {
-    if (previewEl) {
-      previewEl.textContent = buildChallengeUrl();
+    if (!previewEl) {
+      return;
+    }
+    var next = buildChallengeUrl();
+    if (previewEl.textContent === next) {
+      return;
+    }
+    previewEl.textContent = next;
+    if (motion && !reduceMotion) {
+      motion.animate(previewEl, { opacity: [0.45, 1] }, { duration: 0.24, ease: "easeOut" });
     }
   }
 
@@ -108,5 +153,102 @@
     updatePreview();
   }
 
+  /* -------------------------------------------------------- animation --- */
+
+  var duckMark = document.getElementById("duck-mark");
+  var duckSvg = duckMark ? duckMark.querySelector(".duck-svg") : null;
+  var duckBob = duckMark ? duckMark.querySelector(".duck-bob") : null;
+  var submitButton = document.getElementById("challenge-submit");
+  var tweens = new WeakMap();
+
+  /* Spring one element, cancelling whatever that element was doing before. */
+  function springTo(element, target) {
+    if (!motion || !element) {
+      return;
+    }
+    var previous = tweens.get(element);
+    if (previous && typeof previous.stop === "function") {
+      previous.stop();
+    }
+    tweens.set(
+      element,
+      motion.animate(element, target, {
+        type: "spring",
+        stiffness: 300,
+        damping: 20,
+        mass: 0.6
+      })
+    );
+  }
+
+  function startDuckIdle(anime) {
+    if (!anime || !duckBob) {
+      return;
+    }
+    anime.animate(duckBob, {
+      translateY: [-1.4, 1.4],
+      rotate: [-1.8, 1.8],
+      duration: 4600,
+      ease: "inOutSine",
+      loop: true,
+      alternate: true
+    });
+  }
+
+  function bindDuckHover() {
+    if (!motion || !duckMark || !duckSvg) {
+      return;
+    }
+    duckMark.addEventListener("pointerenter", function () {
+      springTo(duckSvg, { rotate: -5, y: -2 });
+    });
+    duckMark.addEventListener("pointerleave", function () {
+      springTo(duckSvg, { rotate: 0, y: 0 });
+    });
+  }
+
+  function bindButtonPress() {
+    if (!motion || !submitButton) {
+      return;
+    }
+    submitButton.addEventListener("pointerdown", function () {
+      springTo(submitButton, { scale: 0.97 });
+    });
+    var release = function () {
+      springTo(submitButton, { scale: 1 });
+    };
+    submitButton.addEventListener("pointerup", release);
+    submitButton.addEventListener("pointercancel", release);
+    submitButton.addEventListener("pointerleave", release);
+  }
+
+  /* The page works without any of this: both imports are optional and a
+     failed load just leaves motion/anime as null. */
+  function loadAnimations() {
+    if (reduceMotion) {
+      return;
+    }
+
+    import("./vendor/anime.esm.js")
+      .then(function (anime) {
+        startDuckIdle(anime);
+      })
+      .catch(function () {
+        /* no duck idle; everything else still runs */
+      });
+
+    import("./vendor/motion.esm.js")
+      .then(function (mod) {
+        motion = mod;
+        bindDuckHover();
+        bindButtonPress();
+        syncStatusPulse();
+      })
+      .catch(function () {
+        motion = null;
+      });
+  }
+
   loadStatus();
+  loadAnimations();
 })();
