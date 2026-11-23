@@ -259,10 +259,17 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 @keyframes pulse{0%{transform:scaleX(0)}100%{transform:scaleX(1)}}
 .rating-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;background:var(--panel2);border:1px solid var(--border)}
 .console-card{grid-column:1/-1}
-.console-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.console-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);gap:8px;flex-wrap:wrap}
 .console-title{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)}
-.console-clear{padding:4px 10px;font-size:0.7rem;border:1px solid var(--border);background:var(--panel);color:var(--fg);border-radius:4px;cursor:pointer}
-.console-clear:hover{border-color:var(--accent)}
+.console-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.console-clear,.console-btn{padding:4px 10px;font-size:0.7rem;border:1px solid var(--border);background:var(--panel);color:var(--fg);border-radius:4px;cursor:pointer;transition:all .15s}
+.console-clear:hover,.console-btn:hover{border-color:var(--accent)}
+.console-btn.paused{border-color:var(--warn);color:var(--warn)}
+.btn-filter{padding:4px 10px;font-size:0.7rem;border-radius:4px;background:var(--panel);color:var(--muted)}
+.btn-filter:hover{color:var(--fg)}
+.btn-filter.active{background:var(--accent);color:#0d1117;border-color:var(--accent)}
+.chip-count{margin-left:4px;font-size:0.65rem;opacity:.75}
+.console-clear:focus-visible,.console-btn:focus-visible,.btn-filter:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .console-output{flex:1;overflow-y:auto;font-family:monospace;font-size:0.7rem;line-height:1.5;background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px;max-height:350px;min-height:200px}
 .console-line{padding:2px 0;display:flex;gap:8px;white-space:pre-wrap;word-break:break-word}
 .console-time{color:var(--muted);white-space:nowrap;min-width:70px}
@@ -383,7 +390,15 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 <h2>Live Activity Console</h2>
 <div class="console-toolbar">
 <span class="console-title">Real-time event stream (last 50)</span>
+<div class="console-actions">
+<button class="btn btn-filter active" data-log-filter="all">All<span class="chip-count" id="count-all"></span></button>
+<button class="btn btn-filter" data-log-filter="moves">Moves<span class="chip-count" id="count-moves"></span></button>
+<button class="btn btn-filter" data-log-filter="draws">Draws<span class="chip-count" id="count-draws"></span></button>
+<button class="btn btn-filter" data-log-filter="challenges">Challenges<span class="chip-count" id="count-challenges"></span></button>
+<button class="btn btn-filter" data-log-filter="system">System<span class="chip-count" id="count-system"></span></button>
+<button class="console-btn" id="consolePause" title="Pause or resume the 1s status refresh">Pause</button>
 <button class="console-clear" id="consoleClear">Clear</button>
+</div>
 </div>
 <div class="console-output" id="consoleOutput"></div>
 </div>
@@ -393,6 +408,39 @@ main{flex:1;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minm
 const $ = (s) => document.querySelector(s);
 const log = (msg, cls='') => { const el=document.createElement('div'); el.className='log-entry'+(cls?' '+cls:''); el.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="log-msg">${msg}</span>`; $('#challengeLog').prepend(el); };
 let autoMatchActive = false;
+// Console refresh + incremental render state
+let refreshTimer = null;
+let refreshPaused = false;
+let currentLogFilter = 'all';
+let lastLogs = [];
+let lastLogSignature = '';
+// Client-side log categorization: priority order draw -> challenge -> move -> system
+const LOG_KEYWORDS = {
+  draws: ['draw', 'fast mode', 'fast-move', 'proven', 'material decisive'],
+  challenges: ['challenge', 'auto-match', 'candidate bots', 'did not accept', 'declining', 'accepting challenge'],
+  moves: ['engine chose', 'move ', 'opening preference', 'repetition', 'illegal move', 'legal alternative',
+          'invalid move format', 'failed to parse move', 'engine error', 'no move available', 'alternative search failed'],
+};
+function classifyLog(msg){
+  var m = String(msg == null ? '' : msg).toLowerCase();
+  var groups = ['draws', 'challenges', 'moves'];
+  for(var i = 0; i < groups.length; i++){
+    var words = LOG_KEYWORDS[groups[i]];
+    for(var j = 0; j < words.length; j++){
+      if(m.indexOf(words[j]) !== -1) return groups[i];
+    }
+  }
+  return 'system';
+}
+function escapeConsole(text){
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function logCounts(logs){
+  var counts = { all: logs.length, moves: 0, draws: 0, challenges: 0, system: 0 };
+  for(var i = 0; i < logs.length; i++){ counts[classifyLog(logs[i].msg)]++; }
+  return counts;
+}
 function matchConfig(){ return {speed:$('#cfgSpeed').value, limit_min:parseInt($('#cfgLimit').value||3), increment:parseInt($('#cfgInc').value||2), rated:$('#toggleRated').checked, elo_min:parseInt($('#cfgEloMin').value||0), elo_max:parseInt($('#cfgEloMax').value||0), preferred_color:$('#cfgColor').value, allowed_speeds:allowedSpeeds()}; }
 function allowedSpeeds(){
   var a=[]; if($('#cfgSpeedBullet').checked)a.push('bullet'); if($('#cfgSpeedBlitz').checked)a.push('blitz'); if($('#cfgSpeedRapid').checked)a.push('rapid');
@@ -465,23 +513,78 @@ watchBtn.style.display='inline-block';
 }else{
 watchBtn.style.display='none';
 }
-// Console logs
-const consoleOut=$('#consoleOutput');
-if(logs && logs.length){
-consoleOut.innerHTML=logs.map(e=>`<div class="console-line"><span class="console-time">${new Date(e.time*1000).toLocaleTimeString()}</span><span class="console-msg console-phase-${phase}">${e.msg}</span></div>`).join('');
-consoleOut.scrollTop=consoleOut.scrollHeight;
+// Console logs - incremental, scroll-preserving render
+lastLogs = logs || [];
+const counts = logCounts(lastLogs);
+[['all','count-all'],['moves','count-moves'],['draws','count-draws'],['challenges','count-challenges'],['system','count-system']].forEach(function(pair){
+  var el = document.getElementById(pair[1]);
+  if(el) el.textContent = counts[pair[0]] ? String(counts[pair[0]]) : '';
+});
+renderConsole();
 }
+function renderConsole(){
+  const out=$('#consoleOutput');
+  const logs = lastLogs || [];
+  const visible = currentLogFilter === 'all'
+    ? logs
+    : logs.filter(function(e){ return classifyLog(e.msg) === currentLogFilter; });
+  // Signature: length + last entry time (+ msg length as a cheap change guard) + active filter
+  const lastEntry = logs.length ? logs[logs.length - 1] : null;
+  const signature = logs.length + '|' + (lastEntry ? lastEntry.time : '') + '|'
+    + (lastEntry ? String(lastEntry.msg).length : 0) + '|' + currentLogFilter;
+  if(signature === lastLogSignature) return;  // nothing new - leave DOM and scroll untouched
+  const wasAtBottom = (out.scrollHeight - out.scrollTop - out.clientHeight) < 30;
+  const prevScroll = out.scrollTop;
+  lastLogSignature = signature;
+  if(!visible.length){
+    out.innerHTML = '<div class="console-line"><span class="console-msg console-phase-IDLE">'
+      + (logs.length ? 'No log entries in this category.' : 'Waiting for activity...') + '</span></div>';
+  }else{
+    const phase = ($('#actionPhase') && $('#actionPhase').textContent) || 'IDLE';
+    out.innerHTML = visible.map(function(e){
+      return '<div class="console-line"><span class="console-time">'
+        + new Date(e.time * 1000).toLocaleTimeString()
+        + '</span><span class="console-msg console-phase-' + phase + '">'
+        + escapeConsole(e.msg) + '</span></div>';
+    }).join('');
+  }
+  // Auto-scroll only when the user was already pinned to the bottom
+  if(wasAtBottom){ out.scrollTop = out.scrollHeight; }
+  else { out.scrollTop = Math.max(0, Math.min(prevScroll, out.scrollHeight)); }
 }
 $('#btnStart').onclick=async()=>{await fetch('/api/auto-match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(matchConfig())});log('Auto-match started','log-success');fetchStatus();};
 $('#btnStop').onclick=async()=>{await fetch('/api/auto-match/stop',{method:'POST'});log('Auto-match stopped','log-warn');fetchStatus();};
 $('#btnRestartEngine').onclick=async()=>{try{await fetch('/api/engine/restart',{method:'POST'});log('Engine restarted','log-success');}catch(e){log('Engine restart failed','log-error');}fetchStatus();};
 $('#btnManual').onclick=async()=>{const u=$('#manualUser').value.trim();if(!u)return;$('#manualUser').value='';log(`Challenging ${u}...`);try{const r=await fetch('/api/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,rated:$('#toggleRated').checked,limit_min:parseInt($('#cfgLimit').value||3),increment:parseInt($('#cfgInc').value||2)})});const d=await r.json();if(r.ok)log(`Challenge sent to ${u}`,'log-success');else log(`Failed: ${d.error||'unknown'}`,'log-error');}catch(e){log('Request failed','log-error');}fetchStatus();};
-$('#consoleClear').onclick=()=>{$('#consoleOutput').innerHTML='';};
+$('#consoleClear').onclick=()=>{ $('#consoleOutput').innerHTML=''; lastLogSignature=''; };
+$('#consolePause').onclick=()=>{
+  refreshPaused = !refreshPaused;
+  var btn = $('#consolePause');
+  if(refreshPaused){
+    if(refreshTimer){ clearInterval(refreshTimer); refreshTimer=null; }
+    btn.textContent='Resume';
+    btn.classList.add('paused');
+  }else{
+    refreshTimer = setInterval(fetchStatus, 1000);
+    btn.textContent='Pause';
+    btn.classList.remove('paused');
+    fetchStatus();
+  }
+};
+document.querySelectorAll('.btn[data-log-filter]').forEach(function(btn){
+  btn.onclick = function(){
+    document.querySelectorAll('.btn[data-log-filter]').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentLogFilter = btn.getAttribute('data-log-filter');
+    lastLogSignature = '';
+    renderConsole();
+  };
+});
 $('#toggleChallenges').onchange = async () => {
   await fetch('/api/toggle-challenges', {method: 'POST'});
   fetchStatus();
 };
-fetchStatus();setInterval(fetchStatus,1000);
+fetchStatus();refreshTimer = setInterval(fetchStatus,1000);
 </script>
 </body>
 </html>
