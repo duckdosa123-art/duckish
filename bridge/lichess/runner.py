@@ -1110,6 +1110,19 @@ class LichessBot:
 
         self._log_event(f"Challenge from {challenger}: {variant} {speed} rated={rated} tc={time_control}")
 
+        # ELO filter for incoming challenges. 0 on either side = unbounded.
+        challenger_rating = challenge.get("challenger", {}).get("rating")
+        if isinstance(challenger_rating, (int, float)):
+            elo_min = self.match_config.elo_min or 0
+            elo_max = self.match_config.elo_max or 0
+            if (elo_min and challenger_rating < elo_min) or (elo_max and challenger_rating > elo_max):
+                self._log_event(f"  -> Declining: rating {challenger_rating} outside {elo_min}-{elo_max}")
+                try:
+                    self.client.decline_challenge(challenge_id, "generic")
+                except Exception:
+                    pass
+                return
+
         # Instantly reject non-clock games (unlimited / correspondence).
         # The timeControl.type field is authoritative; speed may be unset.
         tc_type = time_control.get("type", "clock")
@@ -1340,6 +1353,27 @@ class LichessBot:
         self._auto_match_active = False
         self._set_phase("IDLE", "Auto-match stopped \u2014 click Start Auto-Match or challenge a bot")
         self._log_challenge("Auto-match stopped", success=False)
+
+    def save_match_config(self, config: Dict[str, Any]) -> None:
+        """Persist settings changes live WITHOUT starting auto-match.
+        Preserves the current accept_challenges state - incoming payloads from
+        the dashboard omit it and must not silently disable accepting."""
+        if not isinstance(config, dict):
+            return
+        current = self.match_config
+        merged = dict(config)
+        merged["accept_challenges"] = current.accept_challenges
+        # keep any other fields the dashboard omits by merging from current
+        base = current.to_dict()
+        for k, v in base.items():
+            if k not in merged:
+                merged[k] = v
+        try:
+            self.match_config = MatchConfig.from_dict(merged)
+            self.match_config.save()
+            self._auto_match_rated = self.match_config.rated
+        except Exception as e:
+            self._log_event(f"Settings save error: {e}")
 
     def _auto_match_loop(self) -> None:
         self._auto_match_next()

@@ -91,10 +91,14 @@ def make_bot(**overrides) -> LichessBot:
 
 def challenge(tc: Dict[str, Any], speed: str = "rapid",
               variant: str = "standard", rated: bool = False,
-              challenger: str = "someone", cid: str = "ch1") -> Dict[str, Any]:
+              challenger: str = "someone", cid: str = "ch1",
+              rating: Any = None) -> Dict[str, Any]:
+    challenger_dict = {"id": challenger, "name": challenger}
+    if rating is not None:
+        challenger_dict["rating"] = rating
     return {
         "id": cid,
-        "challenger": {"id": challenger, "name": challenger},
+        "challenger": challenger_dict,
         "variant": {"key": variant},
         "speed": speed,
         "rated": rated,
@@ -230,6 +234,103 @@ def c09_reason_is_camelcase():
     return ok
 
 
+# ===========================================================================
+# ELO FILTER TESTS (incoming challenges)
+# ===========================================================================
+
+def _clock_rapid(**kw):
+    """A valid clock rapid challenge payload (accepts if ELO passes)."""
+    return challenge({"type": "clock", "limit": 600, "increment": 0},
+                     speed="rapid", challenger="someone", **kw)
+
+
+def e01_too_low_declined():
+    """rating 2400 < elo_min 2600 -> decline 'generic'."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=2600, elo_max=0,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=2400))
+    ok = True
+    ok &= assert_eq("e01 decline_calls", bot.client.decline_calls, [("ch1", "generic")])
+    ok &= assert_eq("e01 accept_calls", bot.client.accept_calls, [])
+    return ok
+
+
+def e02_too_high_declined():
+    """rating 3050 > elo_max 3000 -> decline 'generic'."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=0, elo_max=3000,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=3050))
+    ok = True
+    ok &= assert_eq("e02 decline_calls", bot.client.decline_calls, [("ch1", "generic")])
+    ok &= assert_eq("e02 accept_calls", bot.client.accept_calls, [])
+    return ok
+
+
+def e03_in_range_accepted():
+    """rating 2800 within [2600, 3000] -> accepted, no decline."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=2600, elo_max=3000,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=2800))
+    ok = True
+    ok &= assert_eq("e03 accept_calls", bot.client.accept_calls, ["ch1"])
+    ok &= assert_eq("e03 decline_calls", bot.client.decline_calls, [])
+    return ok
+
+
+def e04_unbounded_accepts():
+    """elo_min == elo_max == 0 (unbounded) -> any rating accepted."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=0, elo_max=0,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=123))
+    ok = True
+    ok &= assert_eq("e04 accept_calls", bot.client.accept_calls, ["ch1"])
+    ok &= assert_eq("e04 decline_calls", bot.client.decline_calls, [])
+    return ok
+
+
+def e05_unknown_rating_accepted():
+    """Challenger has NO rating key, elo_min 2600 -> accepted (can't filter unknown)."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=2600, elo_max=0,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid())  # no rating kwarg
+    ok = True
+    ok &= assert_eq("e05 accept_calls", bot.client.accept_calls, ["ch1"])
+    ok &= assert_eq("e05 decline_calls", bot.client.decline_calls, [])
+    return ok
+
+
+def e06_log_mentions_rating():
+    """Decline log line contains 'rating' and the numbers."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=2600, elo_max=0,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=2400))
+    ok = True
+    joined = " | ".join(bot.state.logs)
+    ok &= assert_eq("e06 log has 'rating'", "rating" in joined, True)
+    ok &= assert_eq("e06 log has 2400", "2400" in joined, True)
+    ok &= assert_eq("e06 log has 2600", "2600" in joined, True)
+    return ok
+
+
+def e07_reason_is_generic():
+    """Decline API reason is 'generic', NOT 'rating'."""
+    bot = make_bot()
+    bot.match_config = MatchConfig(elo_min=2600, elo_max=0,
+                                   allowed_speeds="blitz,rapid")
+    bot._handle_challenge(_clock_rapid(rating=2400))
+    ok = True
+    reasons = [r for (_cid, r) in bot.client.decline_calls]
+    ok &= assert_eq("e07 reason is generic", reasons, ["generic"])
+    ok &= assert_eq("e07 no 'rating' reason", "rating" in reasons, False)
+    return ok
+
+
 # ---- Runner ----------------------------------------------------------------
 
 def main() -> int:
@@ -243,6 +344,13 @@ def main() -> int:
         c07_already_in_game,
         c08_variant_declined,
         c09_reason_is_camelcase,
+        e01_too_low_declined,
+        e02_too_high_declined,
+        e03_in_range_accepted,
+        e04_unbounded_accepts,
+        e05_unknown_rating_accepted,
+        e06_log_mentions_rating,
+        e07_reason_is_generic,
     ]
 
     failures = 0

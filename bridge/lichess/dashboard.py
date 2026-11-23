@@ -160,6 +160,19 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/toggle-challenges":
             self.bot_ref._accept_challenges = not self.bot_ref._accept_challenges
             self._write_response(200, {"Content-Type": "application/json"}, json.dumps({"ok": True, "accept_challenges": self.bot_ref._accept_challenges}).encode("utf-8"))
+        elif self.path == "/api/settings":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+            config = None
+            if body:
+                try:
+                    parsed = json.loads(body)
+                    if isinstance(parsed, dict):
+                        config = parsed
+                except Exception:
+                    config = None
+            self.bot_ref.save_match_config(config)
+            self._write_response(200, {"Content-Type": "application/json"}, b'{"ok":true}')
         elif self.path == "/api/engine/restart":
             try:
                 self.bot_ref.engine.respawn()
@@ -442,6 +455,16 @@ function logCounts(logs){
   return counts;
 }
 function matchConfig(){ return {speed:$('#cfgSpeed').value, limit_min:parseInt($('#cfgLimit').value||3), increment:parseInt($('#cfgInc').value||2), rated:$('#toggleRated').checked, elo_min:parseInt($('#cfgEloMin').value||0), elo_max:parseInt($('#cfgEloMax').value||0), preferred_color:$('#cfgColor').value, allowed_speeds:allowedSpeeds()}; }
+let settingsTimer = null;
+function scheduleSettingsSave(){
+  if(settingsTimer) clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(async () => {
+    try { await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(matchConfig())}); } catch(e) {}
+  }, 400);
+}
+['#cfgSpeed','#cfgLimit','#cfgInc','#toggleRated','#cfgEloMin','#cfgEloMax','#cfgColor','#cfgSpeedBullet','#cfgSpeedBlitz','#cfgSpeedRapid'].forEach(function(sel){
+  var el=$(sel); if(el){ el.addEventListener('change', scheduleSettingsSave); el.addEventListener('input', scheduleSettingsSave); }
+});
 function allowedSpeeds(){
   var a=[]; if($('#cfgSpeedBullet').checked)a.push('bullet'); if($('#cfgSpeedBlitz').checked)a.push('blitz'); if($('#cfgSpeedRapid').checked)a.push('rapid');
   return a.length ? a.join(',') : 'blitz';
