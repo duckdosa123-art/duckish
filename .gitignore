@@ -42,3 +42,4 @@ syzygy/
 *.rtbw
 *.rtbz
 result.txt
+bench_report.txt

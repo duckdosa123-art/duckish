@@ -34,6 +34,37 @@ from experience import (
 )
 
 
+# ---- Syzygy tablebase (lazy, optional) --------------------------------------
+
+_SYZYGY_TB = None
+_SYZYGY_TB_TRIED = False
+
+
+def _get_syzygy_tablebase():
+    """Lazily load a Syzygy tablebase from <repo>/syzygy if present.
+
+    Returns the Tablebase object, or None if unavailable. Never raises: any
+    failure (missing dir, bad files, import error) is swallowed so the draw
+    logic degrades gracefully to material/clock heuristics. Result is cached
+    after the first attempt.
+    """
+    global _SYZYGY_TB, _SYZYGY_TB_TRIED
+    if _SYZYGY_TB_TRIED:
+        return _SYZYGY_TB
+    _SYZYGY_TB_TRIED = True
+    try:
+        import chess.syzygy
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        syzygy_dir = os.path.join(repo_root, "syzygy")
+        if os.path.isdir(syzygy_dir):
+            tb = chess.syzygy.Tablebase()
+            if tb.add_directory(syzygy_dir, load_wdl=True, load_dtz=False) > 0:
+                _SYZYGY_TB = tb
+    except Exception:
+        _SYZYGY_TB = None
+    return _SYZYGY_TB
+
+
 # ---- Game Handler -----------------------------------------------------------
 
 class GameHandler:
@@ -77,6 +108,7 @@ class GameHandler:
         self.opponent_rating = opponent_rating
         self._draw_offer_seen = False   # dedupe: gameState repeats offer every update
         self._fast_mode = False         # when True, play ~100ms non-repeating moves
+        self._fast_mode_source = None   # 'proven' | 'can flag' | 'higher-rated' | 'offer' | None
         self._running = True
         self._finished = False
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -246,6 +278,177 @@ class GameHandler:
         else:
             return moves_count % 2 == 1
 
+    # -- draw / fast-move decision helpers ------------------------------------
+
+    def _is_proven_draw(self, board, tablebase=None) -> Optional[str]:
+        """Return a reason string if the position is a PROVEN draw, else None.
+
+        Order: insufficient material, then fifty-move, then a Syzygy tablebase
+        probe (only for <=5 pieces and no castling rights). A tablebase is only
+        consulted when one is explicitly supplied; passing None means no probe.
+        A tablebase KeyError (unknown position) is treated as 'not proven'.
+        """
+        try:
+            if board.is_insufficient_material():
+                return "insufficient material"
+            if board.is_fifty_moves():
+                return "fifty moves"
+        except Exception:
+            return None
+        if (
+            tablebase is not None
+            and len(board.piece_map()) <= 5
+            and not board.castling_rights
+        ):
+            try:
+                wdl = tablebase.get_wdl(board)
+            except Exception:
+                wdl = None
+            if wdl == 0:
+                return "tablebase WDL=0"
+        return None
+
+    def draw_decision(self, score: int, our_ms: int, their_ms: int, board,
+                      our_rating: Optional[int],
+                      opp_rating: Optional[int]) -> Dict[str, Any]:
+        """PURE draw-offer decision. No API calls, no logs, no side effects.
+
+        ``score`` is already from OUR perspective (the caller does the sign
+        flip). Returns a dict with keys: action, reason, fast_mode,
+        fast_mode_reason.
+        """
+        our_ms = our_ms or 0
+        their_ms = their_ms or 0
+        our_rating = our_rating or 0
+        opp_rating = opp_rating or 0
+
+        def _result(action, reason, fast_mode=False, fast_reason=None):
+            return {
+                "action": action,
+                "reason": reason,
+                "fast_mode": fast_mode,
+                "fast_mode_reason": fast_reason,
+            }
+
+        # 1) Never flag: critical clock -> accept any offer.
+        if our_ms < 20000:
+            return _result("accept", f"low clock ({our_ms // 1000}s)")
+        # 2) Losing -> a draw is a great result.
+        if score < -50:
+            return _result("accept", f"losing ({score}cp)")
+        # 3) Winning -> decline, play for the full point.
+        if score > 50:
+            return _result("decline", f"winning ({score}cp)")
+
+        # 4) Drawn/equal (-50..+50).
+        proven = self._is_proven_draw(board)
+        if proven:
+            if their_ms < 15000:
+                fast = our_ms >= 60000
+                return _result(
+                    "decline",
+                    f"drawn ({score}cp), can flag them ({their_ms // 1000}s)",
+                    fast,
+                    "can flag" if fast else None,
+                )
+            fast = our_ms >= 60000
+            return _result(
+                "decline",
+                f"drawn ({score}cp), proven draw hunt ({proven})",
+                fast,
+                "proven draw" if fast else None,
+            )
+
+        complexity_ok = (len(board.piece_map()) <= 10) and not any(
+            p.piece_type == chess.QUEEN for p in board.piece_map().values()
+        )
+        if our_rating and opp_rating and our_rating > opp_rating:
+            fast = our_ms >= 60000 and complexity_ok
+            return _result(
+                "decline",
+                f"drawn ({score}cp), higher-rated must avoid draw "
+                f"({our_rating}>{opp_rating})",
+                fast,
+                "higher-rated" if fast else None,
+            )
+
+        # Lower / equal / unknown rating -> take the point.
+        return _result("accept", f"drawn ({score}cp), keep the point")
+
+    def _effective_movetime(self, base_ms: int, our_ms: int,
+                            fast_mode: bool) -> int:
+        """Movetime for this move: instant when fast-moving or low on clock."""
+        if fast_mode:
+            return 100
+        if (our_ms or 0) < 15000:
+            return 100
+        return base_ms
+
+    def _repeat_threshold(self, time_ahead_ms: int, fast_mode: bool) -> int:
+        """How many times a position may recur before we break the cycle."""
+        if fast_mode or time_ahead_ms > 20000:
+            return 1
+        return 2
+
+    def _detect_and_apply_draw_state(self) -> Optional[str]:
+        """Autonomously flip fast mode on/off based on proven-draw detection.
+
+        Fast mode is activated only for a genuine proven draw (insufficient
+        material or a tablebase WDL=0); a fifty-move draw must NOT trigger it
+        (blitzing could throw a win, and flagging is pointless once a 50-move
+        draw is available). Any fast mode - whatever its source - is cleared as
+        soon as the material becomes decisive (a queen on the board, or a >= 3
+        point material edge) so the bot never blitzes a won position.
+        """
+        board = self._board()
+        reason = self._is_proven_draw(board, tablebase=_get_syzygy_tablebase())
+        cur_fast = getattr(self, "_fast_mode", False)
+        src = getattr(self, "_fast_mode_source", None)
+
+        # Material-based safety clear. Runs BEFORE any activation so a decisive
+        # position cannot immediately re-enter fast mode, and applies to ALL
+        # sources (including 'proven').
+        piece_map = board.piece_map()
+        values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 0,
+        }
+        our_color = chess.WHITE if self.color == "white" else chess.BLACK
+        our_material = 0
+        opp_material = 0
+        any_queen = False
+        for piece in piece_map.values():
+            if piece.piece_type == chess.QUEEN:
+                any_queen = True
+            v = values.get(piece.piece_type, 0)
+            if piece.color == our_color:
+                our_material += v
+            else:
+                opp_material += v
+        decisive = any_queen or abs(our_material - opp_material) >= 3
+
+        if cur_fast and decisive:
+            self._fast_mode = False
+            self._fast_mode_source = None
+            self._log(f"[Game {self.game_id}] Material decisive - fast mode OFF")
+            cur_fast = False
+
+        if reason and reason != "fifty moves" and not cur_fast and not decisive:
+            self._fast_mode = True
+            self._fast_mode_source = "proven"
+            self._log(f"[Game {self.game_id}] Proven draw detected "
+                      f"({reason}) - fast mode ON")
+        elif not reason and cur_fast and src == "proven":
+            self._fast_mode = False
+            self._fast_mode_source = None
+            self._log(f"[Game {self.game_id}] Position no longer proven "
+                      f"drawn - fast mode OFF")
+        return reason
+
     def _handle_draw_offer(self) -> None:
         """Decide accept/decline using board eval + clock + rating. Never flag."""
         try:
@@ -268,48 +471,40 @@ class GameHandler:
             except Exception:
                 pass
 
-            our_rating = getattr(self, "our_rating", None) or 0
-            opp_rating = getattr(self, "opponent_rating", None) or 0
+            try:
+                our_rating = getattr(self, "our_rating", None)
+                opp_rating = getattr(self, "opponent_rating", None)
+                decision = self.draw_decision(
+                    score, our_ms, their_ms, board, our_rating, opp_rating
+                )
+            except Exception as e:
+                self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
+                return
 
-            # 1) Never flag: if our clock is critical, accept any offer.
-            if our_ms < 20000:
-                decision = "accept"; reason = "low clock"
-            # 2) Losing on the board -> a draw is a great result.
-            elif score < -50:
-                decision = "accept"; reason = f"losing ({score}cp)"
-            # 3) Winning -> decline, play for the full point.
-            elif score > 50:
-                decision = "decline"; reason = f"winning ({score}cp)"
-            else:
-                # Drawn/equal (-50..+50). Can we flag them before the 50-move auto-draw?
-                # Fast move ~100ms + ~200ms network overhead = ~300ms/move.
-                # 50 moves * 300ms = 15s. If their clock > 15s, they won't flag in time.
-                can_flag = their_ms < 15000
-                if can_flag:
-                    decision = "decline"; reason = f"drawn ({score}cp), can flag them ({their_ms//1000}s)"
-                else:
-                    # Rating tiebreaker: draw vs higher-rated = ELO gain; vs lower-rated = loss.
-                    if our_rating and opp_rating and our_rating > opp_rating:
-                        decision = "decline"; reason = f"drawn, we're higher-rated ({our_rating}>{opp_rating})"
-                    else:
-                        decision = "accept"; reason = f"drawn, they're higher/equal-rated ({our_rating} vs {opp_rating})"
-
-            if decision == "accept":
+            reason = decision["reason"]
+            if decision["action"] == "accept":
                 self.client.accept_draw(self.game_id)
                 self._log(f"[Game {self.game_id}] Accepted draw offer: {reason}")
             else:
                 self.client.decline_draw(self.game_id)
                 self._log(f"[Game {self.game_id}] Declined draw offer: {reason}")
-                if score >= -50 and score <= 50 and our_ms >= 60000:
-                    # Drawn + healthy clock: switch to fast non-repeating moves to try to flag them.
+                if decision.get("fast_mode"):
                     self._fast_mode = True
-                    self._log(f"[Game {self.game_id}] Fast-move mode ON (drawn position, time advantage)")
+                    self._fast_mode_source = decision.get("fast_mode_reason") or "offer"
+                    self._log(f"[Game {self.game_id}] Fast-move mode ON: {reason}")
         except Exception as e:
             self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
 
     def _make_move(self) -> None:
         if not self._running:
             return
+
+        # Autonomous proven-draw detection: flip fast mode on/off if the
+        # current position is (or stops being) a proven draw.
+        try:
+            self._detect_and_apply_draw_state()
+        except Exception:
+            pass
 
         # Play the engine's RAW best move (like the analyzer). Single PV keeps
         # Lazy SMP active (MultiPV>1 disables helper threads in this engine).
@@ -347,12 +542,10 @@ class GameHandler:
         except Exception:
             pass
         # Fast mode: dead-drawn position with time advantage -> ~100ms moves so the
-        # opponent burns their clock. Cap at a small floor to avoid HTTP rate limits.
-        if getattr(self, "_fast_mode", False):
-            movetime = 100
-        # Hard safety: if our clock is critical, always move instantly.
-        if (our_ms or 0) < 15000:
-            movetime = 100
+        # opponent burns their clock. Also instant when our clock is critical.
+        movetime = self._effective_movetime(
+            movetime, our_ms, getattr(self, "_fast_mode", False)
+        )
         bestmove = None
         for search_try in range(4):
             try:
@@ -457,7 +650,9 @@ class GameHandler:
                     # repetition pattern at the SECOND occurrence: they need a third
                     # to draw, so refusing to repeat now denies it to them.
                     # (Game VHxxIZFl: up Queen for Rook, shuffled Kf2/Kg1 into a 3rd.)
-                    repeat_threshold = 1 if (getattr(self, "_fast_mode", False) or time_ahead_ms > 20_000) else 2
+                    repeat_threshold = self._repeat_threshold(
+                        time_ahead_ms, getattr(self, "_fast_mode", False)
+                    )
                     would_repeat = seen >= repeat_threshold
                     if would_repeat:
 
@@ -589,6 +784,7 @@ class GameHandler:
         self._finished = True
         self._running = False  # STOP THE GAME LOOP IMMEDIATELY
         self._fast_mode = False
+        self._fast_mode_source = None
 
         winner = event.get("winner")
         status = event.get("status")
