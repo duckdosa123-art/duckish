@@ -13,7 +13,6 @@ This is the rulebook for the Duckish about page. Read this before touching any f
 ## Goals
 
 - Feel like a creature with an attitude, not a brochure about an engine
-- Prove the attitude with something Duckish actually did, not adjectives
 - Keep the challenge flow working and honest
 
 ## Non-goals
@@ -30,6 +29,7 @@ This is the rulebook for the Duckish about page. Read this before touching any f
 - Three-card grids, hero CTA, FAQ accordion, testimonials, logo walls
 - Emoji used as icons, clip-art rubber ducks, yellow everything, quack jokes
 - Box-shadows, layout-shifting hover, motion that loops fast or never rests
+- Do not add unverifiable claims about specific games. No proof section.
 
 ## Design language
 
@@ -62,11 +62,10 @@ The mascot is a single elegant line silhouette with three tones: body in `curren
 
 1. **Masthead** — wordmark + duck, tagline `chess engine / duck on lichess`, status row. Small.
 2. **Statement** — the defiant line in large Fraunces. This is the hero, not the wordmark. Supporting subline in mono or body. Suggested copy: `Duckish does not beg for draws.` Followed by one quiet line about what it does instead. Keep it short and in voice.
-3. **Proof** — one real game. The final position of `9dYMwyZN` (Duckish as White, `Bh1#` on move 106 vs eigenmann). Small static mini-board, accurate pieces, no interactivity needed. Caption with the facts: 106 moves, draw was on the table, mate instead. This is proof of life and must be a real game, never decorative chess art.
-4. **Bio** — four paragraphs. Frozen verbatim. Do not edit, re-punctuate, or reorder.
-5. **Facts** — compact `<dl>` definition list. Rating, openings, engine. No cards.
-6. **Challenge** — form with exact Lichess `#friend` params, defaults casual / 10 / 0 / white / standard, live URL preview. Honest notes about rated needing sign-in and standard-only.
-7. **Footer** — Lichess + GitHub links. No colophon.
+3. **Bio** — four paragraphs. Frozen verbatim. Do not edit, re-punctuate, or reorder.
+4. **Facts** — compact `<dl>` definition list. Rating, openings, engine. No cards.
+5. **Challenge** — form with exact Lichess `#friend` params, defaults casual / 10 / 0 / white / standard, live URL preview. Honest notes about rated needing sign-in and standard-only.
+6. **Footer** — Lichess + GitHub links. No colophon.
 
 ## Behavioral rules (frozen)
 
