@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Duckish - a chess engine</title>
+  <meta name="description" content="Duckish is a chess engine written in Rust. It runs on an i5 laptop with four threads and 256 MB of hash. It is rated around 2860 at rapid on Lichess.">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230c0a09'/%3E%3Ccircle cx='8' cy='8' r='4' fill='%23d98a6b'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="page">
+
+    <header class="intro">
+      <div class="masthead">
+        <h1 class="wordmark">Duckish</h1>
+        <p class="tagline">chess engine / lichess bot</p>
+      </div>
+      <div class="status" role="status" aria-live="polite">
+        <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+        <span class="status-text" id="status-text">status unavailable</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="bio" aria-label="About Duckish">
+        <p>Duckish is a chess engine written in Rust. It runs on an i5 laptop with four threads and 256 MB of hash. It is rated around 2860 at rapid on Lichess.</p>
+        <p>With the black pieces it plays defensively. It gives up space early and waits for counterplay. Against a stronger opponent it is happy to take a draw.</p>
+        <p>With the white pieces it plays normally. It builds slowly and presses when the position allows. It never offers a draw. It accepts one only when it is the lower rated side.</p>
+        <p>As white it likes the Reti. As black it answers 1 e4 with the Sicilian and 1 d4 with a Grunfeld setup.</p>
+      </section>
+
+      <section class="facts" aria-label="At a glance">
+        <dl>
+          <div class="fact">
+            <dt>Rating</dt>
+            <dd>Rapid 2860</dd>
+          </div>
+          <div class="fact">
+            <dt>As white</dt>
+            <dd>Reti</dd>
+          </div>
+          <div class="fact">
+            <dt>As black</dt>
+            <dd>Sicilian vs 1 e4 and Grunfeld vs 1 d4</dd>
+          </div>
+          <div class="fact">
+            <dt>Engine</dt>
+            <dd>Rust on four threads with 256 MB hash</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="challenge" aria-labelledby="challenge-heading">
+        <h2 id="challenge-heading">Challenge Duckish</h2>
+        <p class="lede">Set a game up in the Lichess lobby. The link opens a new tab.</p>
+
+        <form class="form" id="challenge-form" novalidate>
+          <div class="field">
+            <label for="minutes">Minutes per side</label>
+            <input id="minutes" name="minutesPerSide" type="number" min="0.25" max="180" step="0.25" value="10" inputmode="decimal">
+          </div>
+
+          <div class="field">
+            <label for="increment">Increment</label>
+            <input id="increment" name="increment" type="number" min="0" max="180" step="1" value="0" inputmode="numeric">
+          </div>
+
+          <div class="field">
+            <label for="color">Color</label>
+            <select id="color" name="color">
+              <option value="white" selected>White</option>
+              <option value="random">Random</option>
+              <option value="black">Black</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="game-mode">Game mode</label>
+            <select id="game-mode" name="gameMode">
+              <option value="casual" selected>Casual</option>
+              <option value="rated">Rated</option>
+            </select>
+            <p class="hint">Rated needs you signed in on Lichess</p>
+          </div>
+
+          <div class="field field--wide">
+            <label for="variant">Variant</label>
+            <select id="variant" name="variant">
+              <option value="standard" selected>Standard</option>
+              <option value="chess960">Chess960</option>
+            </select>
+            <p class="hint">Duckish plays standard only</p>
+          </div>
+        </form>
+
+        <button class="button button--primary" id="challenge-submit" type="submit" form="challenge-form">Open challenge on Lichess</button>
+
+        <div class="preview">
+          <span class="preview-label">Challenge URL</span>
+          <code class="preview-url" id="preview-url">https://lichess.org/?user=duckish&amp;variant=standard&amp;gameMode=casual&amp;minutesPerSide=10&amp;increment=0&amp;color=white#friend</code>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <nav class="footer-links" aria-label="Links">
+        <a href="https://lichess.org/@/duckish" target="_blank" rel="noopener">Lichess</a>
+        <a href="https://github.com/duckdosa123-art/duckish" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <p class="colophon">Set in Fraunces, Newsreader and IBM Plex Mono</p>
+    </footer>
+
+  </div>
+
+  <script src="main.js" defer></script>
+</body>
+</html>

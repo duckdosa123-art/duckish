@@ -1110,6 +1110,17 @@ class LichessBot:
 
         self._log_event(f"Challenge from {challenger}: {variant} {speed} rated={rated} tc={time_control}")
 
+        # Instantly reject non-clock games (unlimited / correspondence).
+        # The timeControl.type field is authoritative; speed may be unset.
+        tc_type = time_control.get("type", "clock")
+        if tc_type != "clock":
+            self._log_event(f"  -> Declining: {tc_type} games not supported")
+            try:
+                self.client.decline_challenge(challenge_id, "timeControl")
+            except Exception:
+                pass
+            return
+
         # Only accept standard variant real-time games
         if variant not in SUPPORTED_VARIANTS:
             self._log_event(f"  -> Declining: unsupported variant {variant}")
@@ -1117,7 +1128,7 @@ class LichessBot:
             return
         if speed not in SUPPORTED_SPEEDS:
             self._log_event(f"  -> Declining: unsupported speed {speed} (correspondence not supported)")
-            self.client.decline_challenge(challenge_id, "timecontrol")
+            self.client.decline_challenge(challenge_id, "timeControl")
             return
 
         # Decline speeds the user disabled (e.g. bullet is bad for our time management)
@@ -1125,7 +1136,7 @@ class LichessBot:
         if speed not in allowed:
             self._log_event(f"  -> Declining: speed {speed} not in allowed speeds {sorted(allowed)}")
             try:
-                self.client.decline_challenge(challenge_id, "timecontrol")
+                self.client.decline_challenge(challenge_id, "timeControl")
             except Exception:
                 pass
             return
