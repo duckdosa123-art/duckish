@@ -64,7 +64,7 @@ The mascot is a single elegant line silhouette with three tones: body in `curren
 2. **Statement** — the defiant line in large Fraunces. This is the hero, not the wordmark. Approved copy: `Bro just read ts`. The supporting subline was removed in a previous update; this section now contains only the h1 heading. Keep it short and in voice.
 3. **Bio** — four paragraphs. Frozen verbatim. Do not edit, re-punctuate, or reorder.
 4. **Facts** — compact `<dl>` definition list. Rating, openings, engine. No cards.
-5. **Challenge** — form with exact Lichess `#friend` params, defaults casual / 10 / 0 / white / standard, live URL preview. Honest notes about rated needing sign-in and standard-only.
+5. **Challenge** — form with exact Lichess `#friend` params, defaults casual / 10 / 0 / black / standard, live URL preview. Honest notes about rated needing sign-in and standard-only. Note: the challenger gets the selected color, so selecting black means Duckish plays White (its strong side).
 6. **Footer** — Lichess + GitHub links. No colophon.
 
 ## Behavioral rules (frozen)

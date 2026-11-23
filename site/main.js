@@ -119,7 +119,7 @@
 
     params.set("minutesPerSide", String(minutes));
     params.set("increment", String(increment));
-    params.set("color", colorSelect ? colorSelect.value : "white");
+    params.set("color", colorSelect ? colorSelect.value : "black");
 
     return "https://lichess.org/?" + params.toString() + "#friend";
   }
