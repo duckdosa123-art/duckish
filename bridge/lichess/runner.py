@@ -240,12 +240,13 @@ class GameHandler:
             # Incoming draw offer: keyed by the OFFERING color (wdraw=White, bdraw=Black).
             offer_field = "bdraw" if self.color == "white" else "wdraw"
             offered = bool(event.get(offer_field))
+            game_over = False
             if offered and not getattr(self, "_draw_offer_seen", False):
                 self._draw_offer_seen = True
-                self._handle_draw_offer()
+                game_over = bool(self._handle_draw_offer())
             elif not offered:
                 self._draw_offer_seen = False  # offer withdrawn/new cycle
-            if self._is_our_turn():
+            if not game_over and self._is_our_turn():
                 self._make_move()
         elif typ == "chatLine":
             pass  # ignore chat
@@ -339,6 +340,11 @@ class GameHandler:
         # 3) Winning -> decline, play for the full point.
         if score > 50:
             return _result("decline", f"winning ({score}cp)")
+
+        # As the LOWER-rated side a draw is a GAIN - take it. Never gamble it
+        # away on a flag hunt (that only pays when we are the favourite).
+        if our_rating and opp_rating and our_rating < opp_rating:
+            return _result("accept", f"drawn ({score}cp), lower-rated - take the draw")
 
         # 4) Drawn/equal (-50..+50).
         proven = self._is_proven_draw(board)
@@ -467,8 +473,13 @@ class GameHandler:
                       f"drawn - fast mode OFF")
         return reason
 
-    def _handle_draw_offer(self) -> None:
-        """Decide accept/decline using board eval + clock + rating. Never flag."""
+    def _handle_draw_offer(self) -> bool:
+        """Decide accept/decline using board eval + clock + rating. Never flag.
+
+        Returns True iff a draw was accepted (game over), so the caller can
+        avoid submitting a move into a finished game.
+        """
+        accepted = False
         try:
             board = self._board()
             our_ms = self.wtime if self.color == "white" else self.btime
@@ -497,11 +508,14 @@ class GameHandler:
                 )
             except Exception as e:
                 self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
-                return
+                return False
 
             reason = decision["reason"]
             if decision["action"] == "accept":
-                self.client.accept_draw(self.game_id)
+                try:
+                    self.client.accept_draw(self.game_id)
+                finally:
+                    accepted = True   # POST attempted - never move into a finished game
                 self._log(f"[Game {self.game_id}] Accepted draw offer: {reason}")
             else:
                 self.client.decline_draw(self.game_id)
@@ -512,6 +526,8 @@ class GameHandler:
                     self._log(f"[Game {self.game_id}] Fast-move mode ON: {reason}")
         except Exception as e:
             self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
+            return False
+        return accepted
 
     def _make_move(self) -> None:
         if not self._running:
