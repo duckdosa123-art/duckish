@@ -55,6 +55,8 @@ class GameHandler:
         variant: str = "standard",
         rated: bool = False,
         state: Optional[Any] = None,
+        our_rating: Optional[int] = None,
+        opponent_rating: Optional[int] = None,
     ):
         self.client = client
         self.engine = engine
@@ -71,6 +73,10 @@ class GameHandler:
         self.variant = variant
         self.rated = rated
         self.state = state
+        self.our_rating = our_rating
+        self.opponent_rating = opponent_rating
+        self._draw_offer_seen = False   # dedupe: gameState repeats offer every update
+        self._fast_mode = False         # when True, play ~100ms non-repeating moves
         self._running = True
         self._finished = False
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -199,6 +205,14 @@ class GameHandler:
                 self._parse_incremental_moves(moves)
             self.wtime = event.get("wtime", self.wtime)
             self.btime = event.get("btime", self.btime)
+            # Incoming draw offer: keyed by the OFFERING color (wdraw=White, bdraw=Black).
+            offer_field = "bdraw" if self.color == "white" else "wdraw"
+            offered = bool(event.get(offer_field))
+            if offered and not getattr(self, "_draw_offer_seen", False):
+                self._draw_offer_seen = True
+                self._handle_draw_offer()
+            elif not offered:
+                self._draw_offer_seen = False  # offer withdrawn/new cycle
             if self._is_our_turn():
                 self._make_move()
         elif typ == "chatLine":
@@ -231,6 +245,67 @@ class GameHandler:
             return moves_count % 2 == 0
         else:
             return moves_count % 2 == 1
+
+    def _handle_draw_offer(self) -> None:
+        """Decide accept/decline using board eval + clock + rating. Never flag."""
+        try:
+            board = self._board()
+            our_ms = self.wtime if self.color == "white" else self.btime
+            their_ms = self.btime if self.color == "white" else self.wtime
+            our_ms = our_ms or 0
+            their_ms = their_ms or 0
+
+            # Quick engine eval from our perspective (side-to-move = us on our turn).
+            score = 0
+            try:
+                cands = self.engine.best_moves_multipv(self.moves_uci, movetime=300, multipv=1)
+                score = cands[0].get("score_cp", 0) if cands else 0
+                # score_cp is side-to-move relative. If the offer arrived on the
+                # opponent's turn (they offered without moving), negate it so score
+                # is always from OUR perspective for the decision matrix below.
+                if not self._is_our_turn():
+                    score = -score
+            except Exception:
+                pass
+
+            our_rating = getattr(self, "our_rating", None) or 0
+            opp_rating = getattr(self, "opponent_rating", None) or 0
+
+            # 1) Never flag: if our clock is critical, accept any offer.
+            if our_ms < 20000:
+                decision = "accept"; reason = "low clock"
+            # 2) Losing on the board -> a draw is a great result.
+            elif score < -50:
+                decision = "accept"; reason = f"losing ({score}cp)"
+            # 3) Winning -> decline, play for the full point.
+            elif score > 50:
+                decision = "decline"; reason = f"winning ({score}cp)"
+            else:
+                # Drawn/equal (-50..+50). Can we flag them before the 50-move auto-draw?
+                # Fast move ~100ms + ~200ms network overhead = ~300ms/move.
+                # 50 moves * 300ms = 15s. If their clock > 15s, they won't flag in time.
+                can_flag = their_ms < 15000
+                if can_flag:
+                    decision = "decline"; reason = f"drawn ({score}cp), can flag them ({their_ms//1000}s)"
+                else:
+                    # Rating tiebreaker: draw vs higher-rated = ELO gain; vs lower-rated = loss.
+                    if our_rating and opp_rating and our_rating > opp_rating:
+                        decision = "decline"; reason = f"drawn, we're higher-rated ({our_rating}>{opp_rating})"
+                    else:
+                        decision = "accept"; reason = f"drawn, they're higher/equal-rated ({our_rating} vs {opp_rating})"
+
+            if decision == "accept":
+                self.client.accept_draw(self.game_id)
+                self._log(f"[Game {self.game_id}] Accepted draw offer: {reason}")
+            else:
+                self.client.decline_draw(self.game_id)
+                self._log(f"[Game {self.game_id}] Declined draw offer: {reason}")
+                if score >= -50 and score <= 50 and our_ms >= 60000:
+                    # Drawn + healthy clock: switch to fast non-repeating moves to try to flag them.
+                    self._fast_mode = True
+                    self._log(f"[Game {self.game_id}] Fast-move mode ON (drawn position, time advantage)")
+        except Exception as e:
+            self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
 
     def _make_move(self) -> None:
         if not self._running:
@@ -271,6 +346,13 @@ class GameHandler:
                         movetime = min(8000, int(movetime * 1.2))
         except Exception:
             pass
+        # Fast mode: dead-drawn position with time advantage -> ~100ms moves so the
+        # opponent burns their clock. Cap at a small floor to avoid HTTP rate limits.
+        if getattr(self, "_fast_mode", False):
+            movetime = 100
+        # Hard safety: if our clock is critical, always move instantly.
+        if (our_ms or 0) < 15000:
+            movetime = 100
         bestmove = None
         for search_try in range(4):
             try:
@@ -375,7 +457,7 @@ class GameHandler:
                     # repetition pattern at the SECOND occurrence: they need a third
                     # to draw, so refusing to repeat now denies it to them.
                     # (Game VHxxIZFl: up Queen for Rook, shuffled Kf2/Kg1 into a 3rd.)
-                    repeat_threshold = 1 if time_ahead_ms > 20_000 else 2
+                    repeat_threshold = 1 if (getattr(self, "_fast_mode", False) or time_ahead_ms > 20_000) else 2
                     would_repeat = seen >= repeat_threshold
                     if would_repeat:
 
@@ -506,6 +588,7 @@ class GameHandler:
             return
         self._finished = True
         self._running = False  # STOP THE GAME LOOP IMMEDIATELY
+        self._fast_mode = False
 
         winner = event.get("winner")
         status = event.get("status")
@@ -842,6 +925,14 @@ class LichessBot:
 
         self._log_event(f"Game started: {game_id} as {color} vs {opponent} ({variant} rated={rated})")
 
+        speed = self.match_config.speed
+        if speed == "blitz":
+            our_rating = self._blitz_rating
+        elif speed == "rapid":
+            our_rating = self._rapid_rating
+        else:
+            our_rating = None
+
         handler = GameHandler(
             self.client,
             self.engine,
@@ -857,6 +948,8 @@ class LichessBot:
             variant,
             rated,
             self.state,
+            our_rating=our_rating,
+            opponent_rating=opponent_rating,
         )
         self.games[game_id] = handler
         self._current_game_id = game_id

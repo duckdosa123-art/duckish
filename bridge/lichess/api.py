@@ -167,3 +167,11 @@ class LichessClient:
     def resign_game(self, game_id: str) -> Dict[str, Any]:
         resp = self._request("POST", f"/bot/game/{game_id}/resign")
         return json.loads(resp.read().decode("utf-8"))
+
+    def accept_draw(self, game_id: str) -> Dict[str, Any]:
+        resp = self._request("POST", f"/bot/game/{game_id}/draw/yes")
+        return json.loads(resp.read().decode("utf-8"))
+
+    def decline_draw(self, game_id: str) -> Dict[str, Any]:
+        resp = self._request("POST", f"/bot/game/{game_id}/draw/no")
+        return json.loads(resp.read().decode("utf-8"))
