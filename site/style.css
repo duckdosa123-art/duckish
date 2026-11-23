@@ -47,43 +47,46 @@ body {
 .page {
   max-width: 980px;
   margin-inline: auto;
-  padding: clamp(2.75rem, 7vw, 5.25rem) clamp(1.25rem, 5vw, 2.75rem) 3rem;
+  padding: clamp(1.75rem, 4vw, 2.75rem) clamp(1.25rem, 5vw, 2.75rem) 3rem;
 }
 
-/* Masthead and status */
+/* Masthead */
 
-.intro {
-  padding-bottom: clamp(2rem, 5vw, 3rem);
-  margin-bottom: clamp(2.5rem, 6vw, 4rem);
+.masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "brand status"
+    "tagline status";
+  align-items: center;
+  gap: 0.35rem 1.25rem;
+  padding-bottom: 1.15rem;
   border-bottom: 1px solid var(--border);
 }
 
-.masthead {
+.masthead__brand {
+  grid-area: brand;
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
 }
 
 .wordmark {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: clamp(3.25rem, 12vw, 5.5rem);
-  line-height: 0.9;
-  letter-spacing: -0.02em;
+  font-size: clamp(1.5rem, 3.6vw, 2rem);
+  line-height: 1;
+  letter-spacing: -0.015em;
   color: var(--heading);
-}
-
-.masthead__title {
-  display: flex;
-  align-items: flex-end;
-  gap: clamp(0.75rem, 2.5vw, 1.25rem);
+  white-space: nowrap;
 }
 
 .duck-mark {
   display: block;
   flex: none;
-  width: clamp(2.5rem, 5.5vw, 3.5rem);
+  width: clamp(2.1rem, 4.6vw, 2.6rem);
   color: var(--accent);
   line-height: 0;
 }
@@ -101,18 +104,22 @@ body {
 }
 
 .tagline {
+  grid-area: tagline;
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  letter-spacing: 0.03em;
   color: var(--text-dim);
 }
 
 .status {
+  grid-area: status;
+  justify-self: end;
+  align-self: center;
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  margin-top: 1.75rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
@@ -136,10 +143,179 @@ body {
   background: var(--dot-offline);
 }
 
+/* Statement */
+
+.statement {
+  padding: clamp(3.25rem, 9vw, 6.5rem) 0 clamp(3.25rem, 8vw, 5.5rem);
+}
+
+.statement__title {
+  margin: 0;
+  max-width: 20ch;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(2.5rem, 8.2vw, 5.25rem);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  color: var(--heading);
+  text-wrap: balance;
+}
+
+.statement__sub {
+  margin: clamp(1.25rem, 3vw, 2rem) 0 0;
+  max-width: 46ch;
+  font-family: var(--font-mono);
+  font-size: clamp(0.875rem, 1.4vw, 1rem);
+  line-height: 1.65;
+  letter-spacing: 0.005em;
+  color: var(--text-dim);
+}
+
+/* Proof */
+
+.proof {
+  padding-bottom: clamp(3.25rem, 8vw, 5.5rem);
+}
+
+.proof__heading {
+  margin: 0 0 1.4rem;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.proof__body {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  gap: clamp(1.75rem, 5vw, 4rem);
+  align-items: center;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: 0.85rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 0.85rem;
+  width: min(300px, 100%);
+}
+
+.board__ranks {
+  grid-column: 1;
+  grid-row: 1;
+  display: grid;
+  grid-template-rows: repeat(8, 1fr);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.board__ranks span {
+  display: flex;
+  align-items: center;
+}
+
+.board__grid {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sq {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe UI Symbol", "DejaVu Sans", "Noto Sans Symbols 2", serif;
+  font-size: clamp(1rem, 4vw, 1.5rem);
+  line-height: 1;
+  user-select: none;
+}
+
+.sq--light {
+  background: var(--text-dim);
+}
+
+.sq--dark {
+  background: var(--raised);
+}
+
+.sq--mate {
+  background: var(--accent);
+}
+
+.piece {
+  line-height: 1;
+}
+
+.piece--white {
+  color: var(--heading);
+  -webkit-text-stroke: 1px var(--bg);
+}
+
+.piece--black {
+  color: var(--bg);
+}
+
+.board__files {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.board__files span {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-top: 0.25rem;
+}
+
+.proof__caption {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.8;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+
+.proof__caption a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.proof__caption a:hover {
+  color: var(--heading);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+.proof__note {
+  margin: 1rem 0 0;
+  max-width: 38ch;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
 /* Bio */
 
 .bio {
   max-width: 65ch;
+  margin-bottom: clamp(3rem, 7vw, 5rem);
 }
 
 .bio p {
@@ -387,6 +563,21 @@ button:focus-visible {
 }
 
 /* Responsive */
+
+@media (min-width: 720px) {
+  .masthead {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "brand tagline status";
+    gap: 0 1rem;
+  }
+}
+
+@media (max-width: 680px) {
+  .proof__body {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+}
 
 @media (max-width: 560px) {
   .form {
