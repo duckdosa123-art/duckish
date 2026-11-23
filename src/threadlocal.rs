@@ -30,6 +30,12 @@ pub struct Histories {
     pub tactical: Box<CaptureHistoryTable>,
     pub continuation: Box<DoubleHistoryTable>,
     pub pawn: Box<HashHistoryTable>,
+    /// Counter-move table: indexed by the previous move's `[piece_type][to]`,
+    /// stores the move that refuted it (Stockfish PR 282 style).
+    pub counter_move: Box<[[Option<Move>; 64]; 6]>,
+    /// Counter-move history: indexed by the previous move's `[piece][to]`,
+    /// then the current move's `[piece][to]`; biases quiet-move ordering.
+    pub counter_history: Box<DoubleHistoryTable>,
 }
 
 impl Histories {
@@ -40,6 +46,8 @@ impl Histories {
             tactical: CaptureHistoryTable::boxed(),
             continuation: DoubleHistoryTable::boxed(),
             pawn: HashHistoryTable::boxed(),
+            counter_move: Box::new([[None; 64]; 6]),
+            counter_history: DoubleHistoryTable::boxed(),
         }
     }
 
@@ -49,6 +57,8 @@ impl Histories {
         self.tactical.clear();
         self.continuation.clear();
         self.pawn.clear();
+        self.counter_move.fill([None; 64]);
+        self.counter_history.clear();
     }
 }
 

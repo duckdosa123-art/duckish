@@ -266,6 +266,19 @@ impl MovePicker {
         let cont_blocks =
             [1, 2].map(|i| (height > i).then(|| &histories.continuation[ss[height - i].ch_idx]));
 
+        // Counter-move history is indexed by the previous move's piece-to and
+        // the current move's piece-to; the counter-move table stores the single
+        // move that best refuted the previous move.
+        let (counter_history, counter_move) = if height > 0 {
+            let prev = ss[height - 1].ch_idx;
+            (
+                Some(&histories.counter_history[prev]),
+                histories.counter_move[prev.piece.piece_type()][prev.to],
+            )
+        } else {
+            (None, None)
+        };
+
         let threats = board.state.threats.all;
         #[expect(clippy::cast_possible_truncation)]
         let pawn_index = (board.state.keys.pawn % HASH_HISTORY_SIZE as u64) as usize;
@@ -299,6 +312,16 @@ impl MovePicker {
                 score += block.map_or(0, |b| i32::from(b[piece][to]));
             }
             score += i32::from(histories.pawn[pawn_index][piece][to]);
+
+            // counter-move history: bonus for refuting the previous move.
+            if let Some(ch) = counter_history {
+                score += i32::from(ch[piece][to]);
+            }
+            // the move that refuted the previous move gets a flat bonus,
+            // acting as a soft killer.
+            if counter_move == Some(m.mov) {
+                score += 4000;
+            }
 
             if board.gives_check(m.mov)
                 && static_exchange_eval(board, conf, m.mov, -conf.quiet_check_see_margin)

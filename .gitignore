@@ -41,3 +41,4 @@ bridge/lichess/settings.json
 syzygy/
 *.rtbw
 *.rtbz
+result.txt

@@ -5,7 +5,7 @@ use crate::{
         chessmove::Move,
         piece::{Colour, Piece, PieceType},
         squareset::SquareSet,
-        types::Square,
+        types::{ContHistIndex, Square},
     },
     historytable::{
         CORRECTION_HISTORY_MAX, HASH_HISTORY_SIZE, history_delta, update_cont_history,
@@ -159,6 +159,56 @@ impl Histories {
         for &m in moves {
             self.update_quiet_history_single(ctx, ss, m, depth, height, m == best_move);
         }
+    }
+
+    /// Record the counter-move refutation table and apply a counter-move history
+    /// bonus when `best_move` caused a beta cutoff at `height` (Stockfish PR 282).
+    ///
+    /// `prev_move` is the move played at `height - 1` (the opponent's move that
+    /// `best_move` refuted), if any. The board is at the current node, so
+    /// `prev_move` is still on the board and its moved piece can be read back.
+    /// The counter-move table is indexed by the previous move's piece type and
+    /// destination square; the counter-move history is indexed by the previous
+    /// move's full piece-to and the current move's piece-to.
+    pub fn update_counter(
+        &mut self,
+        ctx: UpdateCtx,
+        height: usize,
+        prev_move: Option<Move>,
+        best_move: Move,
+        depth: i32,
+        good: bool,
+    ) {
+        // We need a previous move to have something to refute.
+        if height == 0 {
+            return;
+        }
+        let Some(prev_move) = prev_move else {
+            return;
+        };
+
+        // The board is at the current node, so the previous move is still on
+        // the board and its moved piece sits on its destination square.
+        let prev_to = prev_move.history_to_square();
+        let prev_piece = ctx.board.state.mailbox[prev_to]
+            .expect("previous move is on the board, so its piece sits on its to-square");
+
+        // Index the counter-move table by the previous move's piece type and to-square.
+        let cm_piece = prev_piece.piece_type();
+        self.counter_move[cm_piece][prev_to] = Some(best_move);
+
+        // Update counter-move history for the refutation move, indexed by the
+        // previous move's piece-to and the refutation's piece-to.
+        let prev_ch_idx = ContHistIndex {
+            piece: prev_piece,
+            to: prev_to,
+        };
+        let moved = ctx.board.state.mailbox[best_move.from()]
+            .expect("best move's origin square holds the moving piece");
+        let to = best_move.history_to_square();
+        let delta = history_delta(&ctx.info.conf.main_history, depth, good);
+        let val = &mut self.counter_history[prev_ch_idx][moved][to];
+        update_history(val, delta);
     }
 
     /// Update the tactical history counters of a batch of moves.

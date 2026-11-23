@@ -1896,6 +1896,20 @@ pub fn alpha_beta<NT: NodeType>(
         if !t.board.is_tactical(best_move) {
             t.insert_killer(best_move);
 
+            // record the counter-move refutation and update counter-move history,
+            // indexed by the previous (opponent) move at `height - 1`.
+            if height > 0 {
+                let prev_move = t.ss[height - 1].searching;
+                t.histories.update_counter(
+                    history::ctx!(t),
+                    height,
+                    prev_move,
+                    best_move,
+                    depth,
+                    true,
+                );
+            }
+
             // this heuristic is on the whole unmotivated, beyond mere empiricism.
             // perhaps it's really important to know which quiet moves are good in "bad" positions?
             let low = i32::from(!in_check && static_eval <= best_score);
