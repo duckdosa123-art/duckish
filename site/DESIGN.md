@@ -61,7 +61,7 @@ The mascot is a single elegant line silhouette with three tones: body in `curren
 ## Page structure (in order)
 
 1. **Masthead** — wordmark + duck, tagline `chess engine / duck on lichess`, status row. Small.
-2. **Statement** — the defiant line in large Fraunces. This is the hero, not the wordmark. Supporting subline in mono or body. Suggested copy: `Duckish does not beg for draws.` Followed by one quiet line about what it does instead. Keep it short and in voice.
+2. **Statement** — the defiant line in large Fraunces. This is the hero, not the wordmark. Approved copy: `Bro just read ts`. The supporting subline was removed in a previous update; this section now contains only the h1 heading. Keep it short and in voice.
 3. **Bio** — four paragraphs. Frozen verbatim. Do not edit, re-punctuate, or reorder.
 4. **Facts** — compact `<dl>` definition list. Rating, openings, engine. No cards.
 5. **Challenge** — form with exact Lichess `#friend` params, defaults casual / 10 / 0 / white / standard, live URL preview. Honest notes about rated needing sign-in and standard-only.
