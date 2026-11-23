@@ -390,6 +390,24 @@ class GameHandler:
             return 1
         return 2
 
+    def _repeat_count_after(self, board, uci: str) -> int:
+        """Count in ``self._position_counts`` of the position reached by playing
+        ``uci`` from ``board``. Returns 0 for an illegal or invalid move.
+
+        Pushes and pops the move so ``board`` is never mutated.
+        """
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return 0
+        if not board.is_legal(move):
+            return 0
+        board.push(move)
+        try:
+            return self._position_counts.get(self._fen_key(board), 0)
+        finally:
+            board.pop()
+
     def _detect_and_apply_draw_state(self) -> Optional[str]:
         """Autonomously flip fast mode on/off based on proven-draw detection.
 
@@ -673,9 +691,7 @@ class GameHandler:
                                     alt_move = chess.Move.from_uci(alt)
                                     if not board.is_legal(alt_move):
                                         continue
-                                    board.push(alt_move)
-                                    rep = self._position_counts.get(self._fen_key(board), 0) >= 2
-                                    board.pop()
+                                    rep = self._repeat_count_after(board, alt) >= repeat_threshold
                                     if not rep:
                                         replacement = alt
                                         break
@@ -695,8 +711,8 @@ class GameHandler:
                         if replacement is None and time_ahead_ms > 30_000 and top_score >= -50 and endgame_safe:
                             safe = []
                             for lm in board.legal_moves:
+                                rep = self._repeat_count_after(board, lm.uci()) >= repeat_threshold
                                 board.push(lm)
-                                rep = self._position_counts.get(self._fen_key(board), 0) >= 2
                                 attacked = board.is_attacked_by(
                                     chess.BLACK if self.color == "white" else chess.WHITE,
                                     lm.to_square,
@@ -711,10 +727,9 @@ class GameHandler:
                                     chess.WHITE if self.color == "white" else chess.BLACK,
                                     lm.to_square,
                                 )
-                                if dest_attacked and not dest_defended:
-                                    board.pop()
-                                    continue
                                 board.pop()
+                                if dest_attacked and not dest_defended:
+                                    continue
                                 if rep or attacked:
                                     continue
                                 piece = board.piece_at(lm.from_square)
@@ -727,7 +742,7 @@ class GameHandler:
                                 self._log(f"[Game {self.game_id}] Time-ahead shuffle: avoiding repetition, playing {replacement} (+{time_ahead_ms//1000}s)")
 
                         # 3) Only keep the repeating move if we're NOT ahead and not winning.
-                        if replacement:
+                        if replacement and replacement != bestmove:
                             self._log(f"[Game {self.game_id}] Avoiding repetition: engine chose {bestmove}, playing {replacement} instead (score {top_score})")
                             bestmove = replacement
                         elif time_ahead_ms > 30_000 and top_score >= -50:
@@ -768,6 +783,9 @@ class GameHandler:
                 self._log(f"[Game {self.game_id}] Invalid move format: {bestmove}")
                 return
             try:
+                if (not self._running) or getattr(self, "_finished", False):
+                    self._log(f"[Game {self.game_id}] Game ended during search - skipping move {bestmove}")
+                    return
                 result = self.client.make_move(self.game_id, bestmove)
                 if isinstance(result, dict) and result.get("error"):
                     self._log(f"[Game {self.game_id}] Move failed: {result['error']}")
