@@ -94,9 +94,12 @@ class LichessClient:
         resp = self._request("POST", f"/challenge/{challenge_id}/cancel")
         return json.loads(resp.read().decode("utf-8"))
 
-    def make_move(self, game_id: str, move_uci: str) -> Dict[str, Any]:
+    def make_move(self, game_id: str, move_uci: str, offering_draw: bool = False) -> Dict[str, Any]:
+        endpoint = f"/bot/game/{game_id}/move/{move_uci}"
+        if offering_draw:
+            endpoint += "?offeringDraw=true"
         try:
-            resp = self._request("POST", f"/bot/game/{game_id}/move/{move_uci}")
+            resp = self._request("POST", endpoint)
             return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")

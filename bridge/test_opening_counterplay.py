@@ -58,9 +58,9 @@ class StubClient:
         self.last_uci: Optional[str] = None
         self.calls: List[Dict[str, str]] = []
 
-    def make_move(self, game_id: str, uci: str) -> Dict[str, Any]:
+    def make_move(self, game_id: str, uci: str, offering_draw: bool = False) -> Dict[str, Any]:
         self.last_uci = uci
-        self.calls.append({"game_id": game_id, "uci": uci})
+        self.calls.append({"game_id": game_id, "uci": uci, "offering_draw": offering_draw})
         return {"ok": True}
 
 

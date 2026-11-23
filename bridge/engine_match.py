@@ -64,7 +64,7 @@ class StubClient:
     def __init__(self):
         self.last_uci = None
 
-    def make_move(self, game_id, uci):
+    def make_move(self, game_id, uci, offering_draw=False):
         self.last_uci = uci
         return {"ok": True}
 

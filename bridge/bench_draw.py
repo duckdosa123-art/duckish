@@ -90,7 +90,7 @@ class DrawStubClient:
     def decline_draw(self, game_id):
         return {"ok": True}
 
-    def make_move(self, game_id, uci):
+    def make_move(self, game_id, uci, offering_draw=False):
         return {"ok": True}
 
 

@@ -53,9 +53,9 @@ class DrawStubClient:
         self.decline_calls.append(game_id)
         return {"ok": True}
 
-    def make_move(self, game_id: str, uci: str) -> Dict[str, Any]:
+    def make_move(self, game_id: str, uci: str, offering_draw: bool = False) -> Dict[str, Any]:
         self.last_uci = uci
-        self.make_move_calls.append({"game_id": game_id, "uci": uci})
+        self.make_move_calls.append({"game_id": game_id, "uci": uci, "offering_draw": offering_draw})
         return {"ok": True}
 
 
@@ -122,8 +122,7 @@ def a01_lower_rated_proven_can_flag_accept():
     h = make_handler("white", FEN_KV_K, engine=MockEngine(score_cp=0), client=client,
                      wtime=180000, btime=10000, our_rating=2500, opponent_rating=2700)
     h._handle_draw_offer()
-    ok = assert_eq("a01 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("a01 decline_calls", len(client.decline_calls), 0)
+    ok = assert_eq("a01 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -133,8 +132,7 @@ def a02_lower_rated_proven_healthy_clock_accept():
     h = make_handler("white", FEN_KV_K, engine=MockEngine(score_cp=0), client=client,
                      wtime=180000, btime=180000, our_rating=2500, opponent_rating=2700)
     h._handle_draw_offer()
-    ok = assert_eq("a02 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("a02 decline_calls", len(client.decline_calls), 0)
+    ok = assert_eq("a02 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -145,7 +143,7 @@ def a03_lower_rated_effective_accept():
     h = make_handler("white", FEN_KR_V_KR, engine=MockEngine(score_cp=0), client=client,
                      wtime=180000, btime=180000, our_rating=2500, opponent_rating=2700)
     h._handle_draw_offer()
-    ok = assert_eq("a03 accept_calls", len(client.accept_calls), 1)
+    ok = assert_eq("a03 pending_accept", h._pending_draw_accept, True)
     ok &= assert_eq("a03 fast_mode", h._fast_mode, False)
     return ok
 
@@ -157,8 +155,7 @@ def a04_higher_rated_proven_can_flag_decline():
     h = make_handler("white", FEN_KV_K, engine=MockEngine(score_cp=0), client=client,
                      wtime=180000, btime=10000, our_rating=2700, opponent_rating=2500)
     h._handle_draw_offer()
-    ok = assert_eq("a04 decline_calls", len(client.decline_calls), 1)
-    ok &= assert_eq("a04 accept_calls", len(client.accept_calls), 0)
+    ok = assert_eq("a04 pending_accept", h._pending_draw_accept, False)
     ok &= assert_eq("a04 fast_mode", h._fast_mode, True)
     return ok
 
@@ -170,7 +167,7 @@ def a05_equal_rated_proven_can_flag_decline():
     h = make_handler("white", FEN_KV_K, engine=MockEngine(score_cp=0), client=client,
                      wtime=180000, btime=10000, our_rating=2500, opponent_rating=2500)
     h._handle_draw_offer()
-    return assert_eq("a05 decline_calls", len(client.decline_calls), 1)
+    return assert_eq("a05 pending_accept", h._pending_draw_accept, False)
 
 
 def a06_lower_rated_winning_decline():
@@ -179,7 +176,7 @@ def a06_lower_rated_winning_decline():
     h = make_handler("white", "startpos", engine=MockEngine(score_cp=200), client=client,
                      wtime=180000, btime=180000, our_rating=2500, opponent_rating=2700)
     h._handle_draw_offer()
-    return assert_eq("a06 decline_calls", len(client.decline_calls), 1)
+    return assert_eq("a06 pending_accept", h._pending_draw_accept, False)
 
 
 def a07_lower_rated_losing_accept():
@@ -188,36 +185,38 @@ def a07_lower_rated_losing_accept():
     h = make_handler("white", "startpos", engine=MockEngine(score_cp=-200), client=client,
                      wtime=180000, btime=180000, our_rating=2500, opponent_rating=2700)
     h._handle_draw_offer()
-    return assert_eq("a07 accept_calls", len(client.accept_calls), 1)
+    return assert_eq("a07 pending_accept", h._pending_draw_accept, True)
 
 
 # ===========================================================================
-# BUG 2: never move after accepting a draw
+# BUG 2: the draw answer is delivered with the next move
 # ===========================================================================
 
-def a08_accept_then_no_move():
+def a08_accept_via_move_with_offering_draw():
     """Drive a gameState draw offer (we are White, lower-rated, drawn startpos).
-    We accept, so the game is over and NO move may be submitted."""
+    We accept, and the acceptance is delivered by submitting a move that carries
+    offering_draw=True (no separate /draw POST)."""
     client = DrawStubClient()
     h = make_handler("white", "startpos", engine=MockEngine(bestmove="g1f3", score_cp=0),
                      client=client, wtime=180000, btime=180000,
                      our_rating=2500, opponent_rating=2700)
     h._handle_event({"type": "gameState", "status": "started", "bdraw": True})
-    ok = assert_eq("a08 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("a08 make_move_calls", len(client.make_move_calls), 0)
+    ok = assert_eq("a08 make_move_calls", len(client.make_move_calls), 1)
+    ok &= assert_eq("a08 offering_draw", client.make_move_calls[-1]["offering_draw"], True)
     return ok
 
 
 def a09_decline_then_move():
     """Same, but higher-rated so we DECLINE. The game continues, so exactly one
-    move must still be submitted."""
+    move must be submitted, and it must NOT offer a draw (offering_draw False)."""
     client = DrawStubClient()
     h = make_handler("white", "startpos", engine=MockEngine(bestmove="g1f3", score_cp=0),
                      client=client, wtime=180000, btime=180000,
                      our_rating=2700, opponent_rating=2500)
     h._handle_event({"type": "gameState", "status": "started", "bdraw": True})
-    ok = assert_eq("a09 decline_calls", len(client.decline_calls), 1)
+    ok = assert_eq("a09 pending_accept", h._pending_draw_accept, False)
     ok &= assert_eq("a09 make_move_calls", len(client.make_move_calls), 1)
+    ok &= assert_eq("a09 offering_draw", client.make_move_calls[-1]["offering_draw"], False)
     return ok
 
 
@@ -232,7 +231,7 @@ def main() -> int:
         a05_equal_rated_proven_can_flag_decline,
         a06_lower_rated_winning_decline,
         a07_lower_rated_losing_accept,
-        a08_accept_then_no_move,
+        a08_accept_via_move_with_offering_draw,
         a09_decline_then_move,
     ]
 

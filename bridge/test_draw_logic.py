@@ -69,8 +69,8 @@ class DrawStubClient:
         self.decline_calls.append(game_id)
         return {"ok": True}
 
-    def make_move(self, game_id: str, uci: str) -> Dict[str, Any]:
-        self.make_move_calls.append({"game_id": game_id, "uci": uci})
+    def make_move(self, game_id: str, uci: str, offering_draw: bool = False) -> Dict[str, Any]:
+        self.make_move_calls.append({"game_id": game_id, "uci": uci, "offering_draw": offering_draw})
         return {"ok": True}
 
 
@@ -218,8 +218,7 @@ def t01_low_clock_winning_accepts():
     h = make_handler("white", wtime=15000, btime=180000, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t01 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t01 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t01 pending_accept", h._pending_draw_accept, True)
     ok &= assert_eq("t01 fast_mode", h._fast_mode, False)
     return ok
 
@@ -231,8 +230,7 @@ def t02_low_clock_losing_accepts():
     h = make_handler("white", wtime=10000, btime=180000, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t02 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t02 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t02 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -243,8 +241,7 @@ def t03_losing_accepts():
     h = make_handler("white", wtime=180000, btime=180000, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t03 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t03 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t03 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -255,8 +252,7 @@ def t04_winning_declines():
     h = make_handler("white", wtime=180000, btime=180000, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t04 decline_calls", len(client.decline_calls), 1)
-    ok &= assert_eq("t04 accept_calls", len(client.accept_calls), 0)
+    ok &= assert_eq("t04 pending_accept", h._pending_draw_accept, False)
     ok &= assert_eq("t04 fast_mode", h._fast_mode, False)
     return ok
 
@@ -270,8 +266,7 @@ def t05_drawn_proven_can_flag():
                      our_rating=2500, opponent_rating=2500, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t05 decline_calls", len(client.decline_calls), 1)
-    ok &= assert_eq("t05 accept_calls", len(client.accept_calls), 0)
+    ok &= assert_eq("t05 pending_accept", h._pending_draw_accept, False)
     ok &= assert_eq("t05 fast_mode", h._fast_mode, True)
     return ok
 
@@ -285,8 +280,7 @@ def t06_drawn_higher_rated_effective():
                      our_rating=2700, opponent_rating=2500, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t06 decline_calls", len(client.decline_calls), 1)
-    ok &= assert_eq("t06 accept_calls", len(client.accept_calls), 0)
+    ok &= assert_eq("t06 pending_accept", h._pending_draw_accept, False)
     ok &= assert_eq("t06 fast_mode", h._fast_mode, True)
     return ok
 
@@ -299,8 +293,7 @@ def t07_drawn_lower_rated_accepts():
                      our_rating=2500, opponent_rating=2700, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t07 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t07 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t07 pending_accept", h._pending_draw_accept, True)
     ok &= assert_eq("t07 fast_mode", h._fast_mode, False)
     return ok
 
@@ -313,8 +306,7 @@ def t08_drawn_equal_rating_accepts():
                      our_rating=2600, opponent_rating=2600, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t08 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t08 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t08 pending_accept", h._pending_draw_accept, True)
     ok &= assert_eq("t08 fast_mode", h._fast_mode, False)
     return ok
 
@@ -327,8 +319,7 @@ def t09_drawn_unknown_rating_accepts():
                      our_rating=None, opponent_rating=None, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t09 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t09 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t09 pending_accept", h._pending_draw_accept, True)
     ok &= assert_eq("t09 fast_mode", h._fast_mode, False)
     return ok
 
@@ -351,8 +342,7 @@ def t10_sign_flip_black_offer_on_opp_turn():
                      wtime=180000, btime=180000, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t10 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t10 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t10 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -365,8 +355,7 @@ def t11_engine_failure_still_decides():
                      our_rating=None, opponent_rating=None, engine=engine, client=client)
     offer_once(h)
     ok = True
-    ok &= assert_eq("t11 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t11 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t11 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -382,8 +371,7 @@ def t12_missing_rating_attrs_no_crash():
     offer_once(h)
     ok = True
     # Unknown rating -> not higher-rated -> accept.
-    ok &= assert_eq("t12 accept_calls", len(client.accept_calls), 1)
-    ok &= assert_eq("t12 decline_calls", len(client.decline_calls), 0)
+    ok &= assert_eq("t12 pending_accept", h._pending_draw_accept, True)
     return ok
 
 
@@ -398,7 +386,10 @@ def t13_dedupe_via_handle_event():
     event = {"type": "gameState", "status": "started", "bdraw": True, "wdraw": False}
     h._handle_event(dict(event))
     h._handle_event(dict(event))
-    return assert_eq("t13 accept_calls (dedupe)", len(client.accept_calls), 1)
+    # The dedupe means only ONE answer is delivered: exactly one submitted move
+    # carries offering_draw=True.
+    offering = [m for m in client.make_move_calls if m.get("offering_draw")]
+    return assert_eq("t13 offering_draw moves (dedupe)", len(offering), 1)
 
 
 def t14_withdraw_then_reoffer():
@@ -411,7 +402,9 @@ def t14_withdraw_then_reoffer():
     h._handle_event({"type": "gameState", "status": "started", "bdraw": True, "wdraw": False})
     h._handle_event({"type": "gameState", "status": "started", "bdraw": False, "wdraw": False})
     h._handle_event({"type": "gameState", "status": "started", "bdraw": True, "wdraw": False})
-    return assert_eq("t14 accept_calls (two decisions)", len(client.accept_calls), 2)
+    # Two accept decisions -> two "Accepted draw offer" log lines.
+    accepts = [l for l in h.logs if "Accepted draw offer" in l]
+    return assert_eq("t14 accept decisions", len(accepts), 2)
 
 
 # ===========================================================================

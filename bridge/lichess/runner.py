@@ -107,6 +107,7 @@ class GameHandler:
         self.our_rating = our_rating
         self.opponent_rating = opponent_rating
         self._draw_offer_seen = False   # dedupe: gameState repeats offer every update
+        self._pending_draw_accept = False  # answer a draw offer via the next move (offeringDraw=true)
         self._fast_mode = False         # when True, play ~100ms non-repeating moves
         self._fast_mode_source = None   # 'proven' | 'can flag' | 'higher-rated' | 'offer' | None
         self._running = True
@@ -240,13 +241,16 @@ class GameHandler:
             # Incoming draw offer: keyed by the OFFERING color (wdraw=White, bdraw=Black).
             offer_field = "bdraw" if self.color == "white" else "wdraw"
             offered = bool(event.get(offer_field))
-            game_over = False
             if offered and not getattr(self, "_draw_offer_seen", False):
                 self._draw_offer_seen = True
-                game_over = bool(self._handle_draw_offer())
+                self._handle_draw_offer()
             elif not offered:
                 self._draw_offer_seen = False  # offer withdrawn/new cycle
-            if not game_over and self._is_our_turn():
+                # Answer (accept/decline) is delivered with our next move. If the
+                # offer was withdrawn before we moved, drop any pending accept so
+                # we never wrongly OFFER a draw on a later move.
+                self._pending_draw_accept = False
+            if self._is_our_turn():
                 self._make_move()
         elif typ == "chatLine":
             pass  # ignore chat
@@ -473,13 +477,14 @@ class GameHandler:
                       f"drawn - fast mode OFF")
         return reason
 
-    def _handle_draw_offer(self) -> bool:
+    def _handle_draw_offer(self) -> None:
         """Decide accept/decline using board eval + clock + rating. Never flag.
 
-        Returns True iff a draw was accepted (game over), so the caller can
-        avoid submitting a move into a finished game.
+        The answer is delivered with our next move (``offeringDraw=true`` to
+        accept, a plain move to decline) rather than the fragile
+        ``/draw/{yes,no}`` endpoint. Accepting sets ``_pending_draw_accept`` so
+        the next ``_make_move`` offers the draw; declining clears it.
         """
-        accepted = False
         try:
             board = self._board()
             our_ms = self.wtime if self.color == "white" else self.btime
@@ -508,17 +513,14 @@ class GameHandler:
                 )
             except Exception as e:
                 self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
-                return False
+                return
 
             reason = decision["reason"]
             if decision["action"] == "accept":
-                try:
-                    self.client.accept_draw(self.game_id)
-                finally:
-                    accepted = True   # POST attempted - never move into a finished game
-                self._log(f"[Game {self.game_id}] Accepted draw offer: {reason}")
+                self._pending_draw_accept = True
+                self._log(f"[Game {self.game_id}] Accepted draw offer (via next move): {reason}")
             else:
-                self.client.decline_draw(self.game_id)
+                self._pending_draw_accept = False
                 self._log(f"[Game {self.game_id}] Declined draw offer: {reason}")
                 if decision.get("fast_mode"):
                     self._fast_mode = True
@@ -526,8 +528,6 @@ class GameHandler:
                     self._log(f"[Game {self.game_id}] Fast-move mode ON: {reason}")
         except Exception as e:
             self._log(f"[Game {self.game_id}] Draw-offer decision error: {e}")
-            return False
-        return accepted
 
     def _make_move(self) -> None:
         if not self._running:
@@ -802,7 +802,9 @@ class GameHandler:
                 if (not self._running) or getattr(self, "_finished", False):
                     self._log(f"[Game {self.game_id}] Game ended during search - skipping move {bestmove}")
                     return
-                result = self.client.make_move(self.game_id, bestmove)
+                accepting = bool(getattr(self, "_pending_draw_accept", False))
+                result = self.client.make_move(self.game_id, bestmove, offering_draw=accepting)
+                self._pending_draw_accept = False
                 if isinstance(result, dict) and result.get("error"):
                     self._log(f"[Game {self.game_id}] Move failed: {result['error']}")
                     return

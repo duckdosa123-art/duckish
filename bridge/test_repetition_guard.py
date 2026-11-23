@@ -56,9 +56,9 @@ class DrawStubClient:
         self.last_uci: Optional[str] = None
         self.make_move_calls: List[Dict[str, str]] = []
 
-    def make_move(self, game_id: str, uci: str) -> Dict[str, Any]:
+    def make_move(self, game_id: str, uci: str, offering_draw: bool = False) -> Dict[str, Any]:
         self.last_uci = uci
-        self.make_move_calls.append({"game_id": game_id, "uci": uci})
+        self.make_move_calls.append({"game_id": game_id, "uci": uci, "offering_draw": offering_draw})
         return {"ok": True}
 
     def accept_draw(self, game_id: str) -> Dict[str, Any]:
